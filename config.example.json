@@ -1,0 +1,60 @@
+{
+  // P25 Decoder Configuration File
+  // ===============================
+  // Basic configuration for trunk-decoder service mode
+  
+  // Input/Output Settings
+  "input_path": "/path/to/p25/files/",
+  "output_dir": "/path/to/output/",
+  "recursive": true,
+  
+  // Output Format Control
+  "enable_json": true,
+  "enable_wav": true, 
+  "enable_text": false,
+  
+  // Processing Options
+  "verbose": false,
+  "quiet": false,
+  "process_encrypted": true,
+  "skip_empty_frames": false,
+  "include_frame_analysis": true,
+  
+  // Service Mode Settings (future API integration)
+  "service_mode": "file",
+  "api_endpoint": "http://localhost:8080/api/decode",
+  
+  // Audio Output Settings
+  "audio_format": "wav",
+  "audio_sample_rate": 8000,
+
+  // Decryption Keys
+  // ===============
+  // Format: Array of objects with keyid (hex) and key (hex)
+  // Algorithm is auto-detected based on key length:
+  //   5 bytes = ADP/RC4, 8 bytes = DES-OFB, 32 bytes = AES-256
+  "decryption_keys": [
+    {
+      "keyid": "0x001",
+      "key": "0102030405060708",
+      "description": "DES-OFB example key (8 bytes)"
+    },
+    {
+      "keyid": "0x002", 
+      "key": "0102030405",
+      "description": "ADP/RC4 example key (5 bytes)"
+    },
+    {
+      "keyid": "0x003",
+      "key": "0102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F20",
+      "description": "AES-256 example key (32 bytes)"
+    }
+  ],
+  
+  // Example: Metadata enhancement (future feature)
+  // "metadata_fields": {
+  //   "system_name": "MPSCS",
+  //   "location": "Minnesota",
+  //   "timezone": "America/Chicago"
+  // }
+}

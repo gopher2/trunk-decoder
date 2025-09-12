@@ -1,0 +1,47 @@
+GNU GENERAL PUBLIC LICENSE
+Version 3, 29 June 2007
+
+Copyright (C) 2024 David Kierzkowski (K9DPD)
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+================================================================================
+
+For the complete GPL v3 license text, visit: https://www.gnu.org/licenses/gpl-3.0.txt
+
+ATTRIBUTION AND ACKNOWLEDGMENTS:
+
+This project incorporates substantial code and architecture from:
+
+1. trunk-recorder project (GNU General Public License v3)
+   - Core P25 processing algorithms
+   - IMBE vocoder integration methods
+   - Frame handling and parsing logic
+   - JSON metadata generation techniques
+   This project builds directly on trunk-recorder's excellent implementation.
+
+2. OP25 project (GNU General Public License v3)
+   - P25 protocol implementation
+   - IMBE frame parsing
+   - Digital signal processing components
+
+3. IMBE Vocoder implementation by Pavel Yazev (GPL compatible)
+   - Fixed-point IMBE encoder/decoder
+
+SPECIAL THANKS:
+- trunk-recorder maintainers and contributors for the foundational P25 work
+- OP25 project team for the protocol implementation
+- Amateur radio community for open-source collaboration
+
+All derivative works must comply with GPL v3 terms.
