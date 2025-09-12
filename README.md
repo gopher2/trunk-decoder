@@ -190,14 +190,14 @@ JSON config files can specify decryption keys (implementation pending):
 trunk-decoder enables a distributed P25 processing architecture:
 
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│  trunk-recorder │───▶│  trunk-decoder  │───▶│  trunk-player   │
-│                 │.p25│                 │.wav│                 │
-│ • RF Capture    │    │ • IMBE Decoding │.json • Web Interface │
-│ • P25 Framing   │    │ • Batch Processing │    │ • Audio Playback│
-│ • Metadata      │    │ • Protocol Analysis │    │ • Call Browsing │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-     Capture System        Processing Node       Playback System
+┌─────────────────┐    ┌─────────────────────┐      ┌─────────────────┐
+│  trunk-recorder │───▶│  trunk-decoder      │─────▶│  trunk-player   │
+│                 │.p25│                     │.mp3  │                 │
+│ • RF Capture    │    │ • IMBE Decoding     │.json │ • Web Interface │
+│ • P25 Framing   │    │ • Batch Processing  │      │ • Audio Playback│
+│ • Metadata      │    │ • Protocol Analysis │      │ • Call Browsing │
+└─────────────────┘    └─────────────────────┘      └─────────────────┘
+     Capture System        Processing Node           Playback System
 ```
 
 ### Storage & Processing Benefits
