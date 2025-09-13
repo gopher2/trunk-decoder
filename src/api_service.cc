@@ -8,9 +8,12 @@
 #include <map>
 #include <ctime>
 
-ApiService::ApiService(int port, const std::string& output_dir, bool verbose, bool foreground) 
-    : output_dir_(output_dir), verbose_(verbose), foreground_(foreground), audio_format_("wav"), audio_bitrate_(0) {
+ApiService::ApiService(int port, const std::string& output_dir, bool verbose, bool foreground,
+                       int worker_threads, int queue_size, int job_timeout_ms) 
+    : output_dir_(output_dir), verbose_(verbose), foreground_(foreground), audio_format_("wav"), audio_bitrate_(0),
+      worker_threads_(worker_threads), queue_size_(queue_size), job_timeout_ms_(job_timeout_ms) {
     http_service_ = std::make_unique<HttpService>(port);
+    job_manager_ = std::make_unique<JobManager>(worker_threads_, queue_size_, job_timeout_ms_, verbose_);
     
     // Register API endpoints
     http_service_->add_handler("/api/v1/decode", 
@@ -20,7 +23,12 @@ ApiService::ApiService(int port, const std::string& output_dir, bool verbose, bo
         
     http_service_->add_handler("/api/v1/status", 
         [this](const HttpRequest& req, HttpResponse& resp) {
-            resp.set_json("{\"status\": \"ok\", \"service\": \"trunk-decoder\", \"version\": \"1.0\"}");
+            this->handle_status_request(req, resp);
+        });
+        
+    http_service_->add_handler("/api/v1/jobs/", 
+        [this](const HttpRequest& req, HttpResponse& resp) {
+            this->handle_job_status_request(req, resp);
         });
 }
 
@@ -34,6 +42,12 @@ bool ApiService::start() {
         std::filesystem::create_directories(output_dir_);
     } catch (const std::filesystem::filesystem_error& e) {
         std::cerr << "Failed to create output directory: " << e.what() << std::endl;
+        return false;
+    }
+    
+    // Start job manager first
+    if (!job_manager_->start()) {
+        std::cerr << "Failed to start job manager" << std::endl;
         return false;
     }
     
@@ -64,6 +78,9 @@ bool ApiService::start() {
 void ApiService::stop() {
     if (http_service_) {
         http_service_->stop();
+    }
+    if (job_manager_) {
+        job_manager_->stop();
     }
 }
 
@@ -135,42 +152,33 @@ void ApiService::handle_decode_request(const HttpRequest& request, HttpResponse&
             metadata_str = metadata_it->second;
         }
         
-        // Parse and log call information for multi-system tracking
+        // Get stream name for job routing
+        std::string stream_name = "default";
+        auto stream_it = request.form_data.find("stream_name");
+        if (stream_it != request.form_data.end()) {
+            stream_name = stream_it->second;
+        }
+        
+        // Parse minimal information for logging (but don't do full processing)
         std::string system_name = "Unknown";
-        std::string short_name = "Unknown";
-        std::string talkgroup = "Unknown";
-        std::string frequency = "Unknown";
+        std::string talkgroup = "Unknown"; 
         std::string call_id = "Unknown";
         std::string src_radio_id = "Unknown";
-        std::string encrypted_status = "Clear";
-        std::string site_name = "N/A";  // Unimplemented
-        std::string wacn = "N/A";       // Unimplemented  
-        std::string nac = "N/A";        // Unimplemented
-        std::string rfss = "N/A";       // Unimplemented
-        std::string site_id = "N/A";    // Unimplemented
-        
-        // Debug: Show what metadata we actually received
-        if (verbose_ && !metadata_str.empty()) {
-            std::cout << "[DEBUG] Received metadata: " << metadata_str.substr(0, 200) << "..." << std::endl;
-        }
         
         if (!metadata_str.empty()) {
             try {
-                // Extract key information from JSON metadata
                 auto extract_json_field = [](const std::string& json, const std::string& field) -> std::string {
                     std::string search_pattern = "\"" + field + "\": ";
                     size_t pos = json.find(search_pattern);
                     if (pos != std::string::npos) {
                         pos += search_pattern.length();
                         if (json[pos] == '"') {
-                            // String value
                             pos++;
                             size_t end = json.find('"', pos);
                             if (end != std::string::npos) {
                                 return json.substr(pos, end - pos);
                             }
                         } else {
-                            // Numeric value
                             size_t end = json.find_first_of(",\n}", pos);
                             if (end != std::string::npos) {
                                 return json.substr(pos, end - pos);
@@ -181,40 +189,11 @@ void ApiService::handle_decode_request(const HttpRequest& request, HttpResponse&
                 };
                 
                 system_name = extract_json_field(metadata_str, "short_name");
-                short_name = system_name; // Same field for now
                 talkgroup = extract_json_field(metadata_str, "talkgroup");
                 call_id = extract_json_field(metadata_str, "call_num");
-                frequency = extract_json_field(metadata_str, "freq");
-                // Try multiple possible source radio ID fields
                 src_radio_id = extract_json_field(metadata_str, "srcList");
                 if (src_radio_id == "Unknown") {
                     src_radio_id = extract_json_field(metadata_str, "src");
-                }
-                if (src_radio_id == "Unknown") {
-                    src_radio_id = extract_json_field(metadata_str, "source");
-                }
-                
-                // System identifiers (extract if available in metadata)
-                nac = extract_json_field(metadata_str, "nac");
-                wacn = extract_json_field(metadata_str, "wacn");
-                rfss = extract_json_field(metadata_str, "rfss");
-                site_id = extract_json_field(metadata_str, "site_id");
-                site_name = extract_json_field(metadata_str, "site_name");
-                
-                std::string encrypted_val = extract_json_field(metadata_str, "encrypted");
-                if (encrypted_val == "1" || encrypted_val == "true") {
-                    encrypted_status = "Encrypted";
-                }
-                
-                // Format frequency for display
-                if (frequency != "Unknown") {
-                    try {
-                        double freq_hz = std::stod(frequency);
-                        double freq_mhz = freq_hz / 1000000.0;
-                        frequency = std::to_string(freq_mhz).substr(0, 9) + " MHz";
-                    } catch (...) {
-                        // Keep original if conversion fails
-                    }
                 }
                 
             } catch (const std::exception& e) {
@@ -224,25 +203,12 @@ void ApiService::handle_decode_request(const HttpRequest& request, HttpResponse&
             }
         }
         
-        // Log comprehensive call information
-        std::cout << "[DECODE] " << short_name << " | TG:" << talkgroup 
-                  << " | SRC:" << src_radio_id << " | " << frequency 
-                  << " | Call:" << call_id << " | " << encrypted_status;
-                  
-        // Add system identifiers if available
-        if (nac != "Unknown" && nac != "N/A") std::cout << " | NAC:" << nac;
-        if (wacn != "Unknown" && wacn != "N/A") std::cout << " | WACN:" << wacn;  
-        if (rfss != "Unknown" && rfss != "N/A") std::cout << " | RFSS:" << rfss;
-        if (site_id != "Unknown" && site_id != "N/A") std::cout << " | Site:" << site_id;
-        if (site_name != "Unknown" && site_name != "N/A") std::cout << " | " << site_name;
+        // Log ingestion (not full decode info since that happens later in workers)
+        std::cout << "[INGEST] " << system_name << " | TG:" << talkgroup 
+                  << " | SRC:" << src_radio_id << " | Call:" << call_id 
+                  << " | Stream:" << stream_name << " | Queued" << std::endl;
         
-        std::cout << std::endl;
-        
-        if (verbose_) {
-            std::cout << "[API] Processing P25 file: " << p25_temp_file << std::endl;
-        }
-        
-        // Get original filename from upload
+        // Get original filename for output path generation
         std::string original_filename;
         auto upload_it = request.file_uploads.find("p25_file");
         if (upload_it != request.file_uploads.end()) {
@@ -259,123 +225,58 @@ void ApiService::handle_decode_request(const HttpRequest& request, HttpResponse&
             base_filename = base_filename.substr(0, base_filename.size() - 4);
         }
         
-        // Create folder structure based on metadata if available
+        // Create basic output path (detailed folder structure will be created by worker)
         std::string folder_path = output_dir_;
         if (!metadata_str.empty()) {
             try {
-                // Parse metadata to extract short_name and start_time
+                // Quick parse for system name to create basic folder structure
                 size_t short_name_pos = metadata_str.find("\"short_name\": \"");
-                size_t start_time_pos = metadata_str.find("\"start_time\": ");
-                
-                if (short_name_pos != std::string::npos && start_time_pos != std::string::npos) {
-                    // Extract short_name
-                    short_name_pos += 15; // length of "\"short_name\": \""
+                if (short_name_pos != std::string::npos) {
+                    short_name_pos += 15;
                     size_t short_name_end = metadata_str.find("\"", short_name_pos);
                     std::string short_name = metadata_str.substr(short_name_pos, short_name_end - short_name_pos);
-                    
-                    // Extract start_time
-                    start_time_pos += 14; // length of "\"start_time\": "
-                    size_t start_time_end = metadata_str.find_first_of(",\n}", start_time_pos);
-                    std::string start_time_str = metadata_str.substr(start_time_pos, start_time_end - start_time_pos);
-                    time_t start_time = std::stoll(start_time_str);
-                    
-                    // Convert to date components
-                    struct tm* time_info = localtime(&start_time);
-                    char year[5], month[3], day[3];
-                    strftime(year, sizeof(year), "%Y", time_info);
-                    strftime(month, sizeof(month), "%m", time_info);
-                    strftime(day, sizeof(day), "%d", time_info);
-                    
-                    // Create folder structure: output_dir/SHORT_NAME/YEAR/MONTH/DAY/
-                    folder_path = output_dir_ + "/" + short_name + "/" + year + "/" + month + "/" + day;
-                    
-                    // Create directories
+                    folder_path = output_dir_ + "/" + short_name;
                     std::filesystem::create_directories(folder_path);
                 }
             } catch (const std::exception& e) {
-                if (verbose_) {
-                    std::cout << "[API] Warning: Failed to parse metadata for folder structure: " << e.what() << std::endl;
-                }
+                // Use default folder if parsing fails
             }
         }
         
-        std::string output_base = folder_path + "/" + base_filename;
-        std::string wav_file = output_base + ".wav";
-        std::string json_file = output_base + ".json";
+        std::string output_base_path = folder_path + "/" + base_filename;
         
-        // Configure decoder with audio format
-        decoder_.set_audio_format(audio_format_);
-        decoder_.set_audio_bitrate(audio_bitrate_);
+        // Queue job for asynchronous processing
+        std::string job_id = job_manager_->queue_job(
+            p25_temp_file,
+            metadata_str, 
+            output_base_path,
+            stream_name,
+            upload_script_,
+            audio_format_,
+            audio_bitrate_
+        );
         
-        // Process the P25 file using the decoder
-        if (!decoder_.open_p25_file(p25_temp_file)) {
-            response.status_code = 400;
-            response.set_json("{\"error\": \"Failed to open P25 file\"}");
+        if (job_id.empty()) {
+            response.status_code = 503;
+            response.set_json("{\"error\": \"Processing queue is full\"}");
             cleanup_temp_file(p25_temp_file);
             return;
         }
         
-        // Decode the file
-        if (!decoder_.decode_to_audio(output_base)) {
-            response.status_code = 500;
-            response.set_json("{\"error\": \"Failed to decode P25 file\"}");
-            cleanup_temp_file(p25_temp_file);
-            return;
+        // Return job ID for status tracking
+        response.status_code = 202; // Accepted for processing
+        std::ostringstream json;
+        json << "{"
+             << "\"job_id\": \"" << job_id << "\","
+             << "\"status\": \"queued\","
+             << "\"message\": \"P25 file queued for processing\","
+             << "\"stream_name\": \"" << stream_name << "\""
+             << "}";
+        response.set_json(json.str());
+        
+        if (verbose_) {
+            std::cout << "[API] Queued job " << job_id << " for stream " << stream_name << std::endl;
         }
-        
-        // Write the metadata JSON directly if provided
-        bool json_saved = false;
-        if (!metadata_str.empty()) {
-            std::ofstream json_out(json_file);
-            if (json_out.is_open()) {
-                json_out << metadata_str;
-                json_out.close();
-                json_saved = true;
-            }
-        } else {
-            // No metadata provided - warn and skip JSON generation
-            std::cout << "[WARNING] No metadata provided for call - JSON not created" << std::endl;
-            json_saved = false;
-        }
-        
-        // Check if files were generated
-        bool wav_exists = std::filesystem::exists(wav_file);
-        
-        if (wav_exists && json_saved) {
-            response.status_code = 200;
-            response.set_json("{\"success\": true, \"message\": \"P25 file processed successfully\"}");
-            
-            if (verbose_) {
-                std::cout << "[API] Successfully processed P25 file" << std::endl;
-            }
-            
-            // Execute upload script if configured
-            if (!upload_script_.empty() && std::filesystem::exists(upload_script_)) {
-                try {
-                    std::ostringstream cmd;
-                    cmd << upload_script_ << " \"" << wav_file << "\" \"" << json_file << "\" \"1\"";
-                    
-                    if (verbose_) {
-                        std::cout << "[API] Executing upload script: " << cmd.str() << std::endl;
-                    }
-                    
-                    int result = std::system(cmd.str().c_str());
-                    if (result != 0 && verbose_) {
-                        std::cout << "[API] Upload script returned non-zero exit code: " << result << std::endl;
-                    }
-                } catch (const std::exception& e) {
-                    if (verbose_) {
-                        std::cerr << "[API] Error executing upload script: " << e.what() << std::endl;
-                    }
-                }
-            }
-        } else {
-            response.status_code = 500;
-            response.set_json("{\"error\": \"Failed to generate output files\"}");
-        }
-        
-        // Cleanup temporary file
-        cleanup_temp_file(p25_temp_file);
         
     } catch (const std::exception& e) {
         response.status_code = 500;
@@ -403,5 +304,106 @@ void ApiService::cleanup_temp_file(const std::string& filepath) {
             std::cerr << "[API] Warning: Failed to cleanup temp file " << filepath 
                      << ": " << e.what() << std::endl;
         }
+    }
+}
+
+void ApiService::configure_processing(int worker_threads, int queue_size, int timeout_ms) {
+    worker_threads_ = worker_threads;
+    queue_size_ = queue_size;
+    job_timeout_ms_ = timeout_ms;
+}
+
+JobManager::JobStats ApiService::get_processing_stats() {
+    return job_manager_->get_stats();
+}
+
+void ApiService::handle_status_request(const HttpRequest& request, HttpResponse& response) {
+    try {
+        auto stats = job_manager_->get_stats();
+        
+        std::ostringstream json;
+        json << "{"
+             << "\"status\": \"ok\","
+             << "\"service\": \"trunk-decoder\","
+             << "\"version\": \"1.0\","
+             << "\"processing\": {"
+             << "\"jobs_queued\": " << stats.queued << ","
+             << "\"jobs_completed\": " << stats.completed << ","
+             << "\"jobs_failed\": " << stats.failed << ","
+             << "\"active_workers\": " << stats.active_workers << ","
+             << "\"queue_size\": " << stats.queue_size << ","
+             << "\"avg_processing_time_ms\": " << stats.avg_processing_time_ms
+             << "}"
+             << "}";
+             
+        response.set_json(json.str());
+    } catch (const std::exception& e) {
+        response.status_code = 500;
+        response.set_json("{\"error\": \"Failed to get status\"}");
+    }
+}
+
+void ApiService::handle_job_status_request(const HttpRequest& request, HttpResponse& response) {
+    try {
+        // Extract job ID from URL path (e.g., /api/v1/jobs/job_123456)
+        std::string path = request.path;
+        size_t last_slash = path.find_last_of('/');
+        if (last_slash == std::string::npos || last_slash == path.length() - 1) {
+            response.status_code = 400;
+            response.set_json("{\"error\": \"Job ID required\"}");
+            return;
+        }
+        
+        std::string job_id = path.substr(last_slash + 1);
+        auto job = job_manager_->get_job_status(job_id);
+        
+        if (!job) {
+            response.status_code = 404;
+            response.set_json("{\"error\": \"Job not found\"}");
+            return;
+        }
+        
+        std::string status_str;
+        switch (job->status) {
+            case ProcessingJob::QUEUED: status_str = "queued"; break;
+            case ProcessingJob::PROCESSING: status_str = "processing"; break;
+            case ProcessingJob::COMPLETED: status_str = "completed"; break;
+            case ProcessingJob::FAILED: status_str = "failed"; break;
+        }
+        
+        std::ostringstream json;
+        json << "{"
+             << "\"job_id\": \"" << job->job_id << "\","
+             << "\"status\": \"" << status_str << "\","
+             << "\"stream_name\": \"" << job->stream_name << "\"";
+             
+        if (!job->error_message.empty()) {
+            json << ",\"error\": \"" << job->error_message << "\"";
+        }
+        
+        // Add timing information if available
+        auto now = std::chrono::system_clock::now();
+        auto received_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - job->received_time).count();
+        json << ",\"age_ms\": " << received_ms;
+        
+        if (job->status == ProcessingJob::PROCESSING) {
+            auto processing_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - job->started_time).count();
+            json << ",\"processing_ms\": " << processing_ms;
+        }
+        
+        if (job->status == ProcessingJob::COMPLETED || job->status == ProcessingJob::FAILED) {
+            auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                job->completed_time - job->received_time).count();
+            json << ",\"total_time_ms\": " << total_ms;
+        }
+        
+        json << "}";
+        response.set_json(json.str());
+        
+    } catch (const std::exception& e) {
+        response.status_code = 500;
+        response.set_json("{\"error\": \"Failed to get job status\"}");
     }
 }
