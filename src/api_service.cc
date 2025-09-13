@@ -137,10 +137,17 @@ void ApiService::handle_decode_request(const HttpRequest& request, HttpResponse&
         
         // Parse and log call information for multi-system tracking
         std::string system_name = "Unknown";
+        std::string short_name = "Unknown";
         std::string talkgroup = "Unknown";
         std::string frequency = "Unknown";
         std::string call_id = "Unknown";
+        std::string src_radio_id = "Unknown";
         std::string encrypted_status = "Clear";
+        std::string site_name = "N/A";  // Unimplemented
+        std::string wacn = "N/A";       // Unimplemented  
+        std::string nac = "N/A";        // Unimplemented
+        std::string rfss = "N/A";       // Unimplemented
+        std::string site_id = "N/A";    // Unimplemented
         
         // Debug: Show what metadata we actually received
         if (verbose_ && !metadata_str.empty()) {
@@ -174,9 +181,25 @@ void ApiService::handle_decode_request(const HttpRequest& request, HttpResponse&
                 };
                 
                 system_name = extract_json_field(metadata_str, "short_name");
+                short_name = system_name; // Same field for now
                 talkgroup = extract_json_field(metadata_str, "talkgroup");
                 call_id = extract_json_field(metadata_str, "call_num");
                 frequency = extract_json_field(metadata_str, "freq");
+                // Try multiple possible source radio ID fields
+                src_radio_id = extract_json_field(metadata_str, "srcList");
+                if (src_radio_id == "Unknown") {
+                    src_radio_id = extract_json_field(metadata_str, "src");
+                }
+                if (src_radio_id == "Unknown") {
+                    src_radio_id = extract_json_field(metadata_str, "source");
+                }
+                
+                // System identifiers (extract if available in metadata)
+                nac = extract_json_field(metadata_str, "nac");
+                wacn = extract_json_field(metadata_str, "wacn");
+                rfss = extract_json_field(metadata_str, "rfss");
+                site_id = extract_json_field(metadata_str, "site_id");
+                site_name = extract_json_field(metadata_str, "site_name");
                 
                 std::string encrypted_val = extract_json_field(metadata_str, "encrypted");
                 if (encrypted_val == "1" || encrypted_val == "true") {
@@ -202,9 +225,18 @@ void ApiService::handle_decode_request(const HttpRequest& request, HttpResponse&
         }
         
         // Log comprehensive call information
-        std::cout << "[DECODE] " << system_name << " | TG:" << talkgroup 
-                  << " | " << frequency << " | Call:" << call_id 
-                  << " | " << encrypted_status << std::endl;
+        std::cout << "[DECODE] " << short_name << " | TG:" << talkgroup 
+                  << " | SRC:" << src_radio_id << " | " << frequency 
+                  << " | Call:" << call_id << " | " << encrypted_status;
+                  
+        // Add system identifiers if available
+        if (nac != "Unknown" && nac != "N/A") std::cout << " | NAC:" << nac;
+        if (wacn != "Unknown" && wacn != "N/A") std::cout << " | WACN:" << wacn;  
+        if (rfss != "Unknown" && rfss != "N/A") std::cout << " | RFSS:" << rfss;
+        if (site_id != "Unknown" && site_id != "N/A") std::cout << " | Site:" << site_id;
+        if (site_name != "Unknown" && site_name != "N/A") std::cout << " | " << site_name;
+        
+        std::cout << std::endl;
         
         if (verbose_) {
             std::cout << "[API] Processing P25 file: " << p25_temp_file << std::endl;
