@@ -59,6 +59,25 @@ struct DecoderConfig {
     int audio_bitrate = 0; // 0 = auto, otherwise kbps (e.g. 64, 128)
     bool include_frame_analysis = true;
     
+    // Worker pool settings
+    int worker_threads = 4;
+    int queue_size = 1000;
+    int batch_size = 10;
+    int timeout_ms = 30000;
+    
+    // Ingest stream configurations
+    struct IngestStream {
+        std::string name;
+        std::string system_name;
+        int priority;
+        int dedicated_workers;
+        std::map<std::string, bool> output_formats; // format -> enabled
+        std::map<std::string, int> format_bitrates; // format -> bitrate
+        std::string upload_script;
+        std::string output_dir;
+    };
+    std::vector<IngestStream> ingest_streams;
+    
     // Processing options
     bool process_encrypted = true;
     bool skip_empty_frames = false;
