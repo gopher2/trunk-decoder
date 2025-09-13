@@ -22,8 +22,10 @@
 #include <chrono>
 #include <fstream>
 #include <sstream>
+#include <thread>
 #include <map>
 #include "p25_decoder.h"
+#include "api_service.h"
 
 // Simple JSON parsing for config (avoiding external dependencies)
 #include <map>
@@ -40,10 +42,15 @@ struct DecoderConfig {
     bool recursive = false;
     bool verbose = false;
     bool quiet = false;
+    bool foreground = false;
     
     // Service-specific settings
     std::string service_mode = "file"; // "file" or "api"
     std::string api_endpoint;
+    int api_port = 3000;
+    std::string auth_token;
+    std::string ssl_cert;
+    std::string ssl_key;
     std::map<std::string, std::string> metadata_fields;
     
     // Output settings
@@ -55,6 +62,9 @@ struct DecoderConfig {
     bool process_encrypted = true;
     bool skip_empty_frames = false;
     
+    // Post-processing
+    std::string upload_script;
+    
     // Decryption keys
     struct KeyInfo {
         uint16_t keyid;
@@ -65,53 +75,100 @@ struct DecoderConfig {
     std::vector<KeyInfo> decryption_keys;
 };
 
-// Simple JSON config parser (basic implementation)
+// Simple JSON implementation for parsing (from api_service.cc)
+class SimpleJson {
+public:
+    std::map<std::string, std::string> values;
+    std::map<std::string, std::map<std::string, std::string>> objects;
+    
+    bool parse_file(const std::string& filepath) {
+        std::ifstream file(filepath);
+        if (!file.is_open()) return false;
+        
+        std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        return parse_string(content);
+    }
+    
+    bool parse_string(const std::string& json_str) {
+        // Very basic JSON parser - handles simple key-value pairs and booleans
+        std::string clean_str = json_str;
+        
+        // Remove braces, quotes, and whitespace
+        size_t start = clean_str.find('{');
+        size_t end = clean_str.rfind('}');
+        if (start == std::string::npos || end == std::string::npos) return false;
+        
+        clean_str = clean_str.substr(start + 1, end - start - 1);
+        
+        // Split by commas and parse key-value pairs
+        std::istringstream ss(clean_str);
+        std::string item;
+        while (std::getline(ss, item, ',')) {
+            size_t colon = item.find(':');
+            if (colon == std::string::npos) continue;
+            
+            std::string key = item.substr(0, colon);
+            std::string value = item.substr(colon + 1);
+            
+            // Remove quotes and trim whitespace (including newlines)
+            key.erase(std::remove(key.begin(), key.end(), '"'), key.end());
+            key.erase(0, key.find_first_not_of(" \t\n\r"));
+            key.erase(key.find_last_not_of(" \t\n\r") + 1);
+            
+            value.erase(std::remove(value.begin(), value.end(), '"'), value.end());
+            value.erase(0, value.find_first_not_of(" \t\n\r"));
+            value.erase(value.find_last_not_of(" \t\n\r") + 1);
+            
+            values[key] = value;
+        }
+        return true;
+    }
+    
+    std::string get(const std::string& key, const std::string& default_value = "") const {
+        auto it = values.find(key);
+        return (it != values.end()) ? it->second : default_value;
+    }
+    
+    bool get_bool(const std::string& key, bool default_value = false) const {
+        std::string val = get(key);
+        return val == "true" || val == "1";
+    }
+};
+
+// JSON config parser
 bool parse_config_file(const std::string& config_path, DecoderConfig& config) {
-    std::ifstream file(config_path);
-    if (!file.is_open()) {
-        std::cerr << "Error: Cannot open config file: " << config_path << std::endl;
+    SimpleJson json;
+    if (!json.parse_file(config_path)) {
+        std::cerr << "Error: Cannot parse JSON config file: " << config_path << std::endl;
         return false;
     }
     
-    std::string line;
-    while (std::getline(file, line)) {
-        // Remove whitespace and skip comments
-        line.erase(0, line.find_first_not_of(" \t"));
-        if (line.empty() || line[0] == '/' || line[0] == '#') continue;
-        
-        // Simple key:value parsing
-        size_t colon_pos = line.find(':');
-        if (colon_pos == std::string::npos) continue;
-        
-        std::string key = line.substr(0, colon_pos);
-        std::string value = line.substr(colon_pos + 1);
-        
-        // Remove quotes and whitespace from key and value
-        key.erase(0, key.find_first_not_of(" \t\""));
-        key.erase(key.find_last_not_of(" \t\",") + 1);
-        value.erase(0, value.find_first_not_of(" \t\""));
-        value.erase(value.find_last_not_of(" \t\",") + 1);
-        
-        // Parse configuration values
-        if (key == "input_path") config.input_path = value;
-        else if (key == "output_dir") config.output_dir = value;
-        else if (key == "enable_json") config.enable_json = (value == "true");
-        else if (key == "enable_wav") config.enable_wav = (value == "true");
-        else if (key == "enable_text") config.enable_text = (value == "true");
-        else if (key == "recursive") config.recursive = (value == "true");
-        else if (key == "verbose") config.verbose = (value == "true");
-        else if (key == "quiet") config.quiet = (value == "true");
-        else if (key == "service_mode") config.service_mode = value;
-        else if (key == "api_endpoint") config.api_endpoint = value;
-        else if (key == "audio_format") config.audio_format = value;
-        else if (key == "process_encrypted") config.process_encrypted = (value == "true");
-        else if (key == "skip_empty_frames") config.skip_empty_frames = (value == "true");
-        else if (key == "include_frame_analysis") config.include_frame_analysis = (value == "true");
-        // TODO: Parse decryption_keys array from JSON config
-        // For now, use command line -k options for key specification
-    }
     
-    file.close();
+    // Parse configuration values from JSON
+    config.input_path = json.get("input_path", config.input_path);
+    config.output_dir = json.get("output_dir", config.output_dir);
+    config.enable_json = json.get_bool("enable_json", config.enable_json);
+    config.enable_wav = json.get_bool("enable_wav", config.enable_wav);
+    config.enable_text = json.get_bool("enable_text", config.enable_text);
+    config.recursive = json.get_bool("recursive", config.recursive);
+    config.verbose = json.get_bool("verbose", config.verbose);
+    config.quiet = json.get_bool("quiet", config.quiet);
+    config.foreground = json.get_bool("foreground", config.foreground);
+    config.service_mode = json.get("service_mode", config.service_mode);
+    config.api_endpoint = json.get("api_endpoint", config.api_endpoint);
+    config.api_port = std::stoi(json.get("api_port", std::to_string(config.api_port)));
+    config.auth_token = json.get("auth_token", config.auth_token);
+    config.ssl_cert = json.get("ssl_cert", config.ssl_cert);
+    config.ssl_key = json.get("ssl_key", config.ssl_key);
+    config.audio_format = json.get("audio_format", config.audio_format);
+    config.process_encrypted = json.get_bool("process_encrypted", config.process_encrypted);
+    config.skip_empty_frames = json.get_bool("skip_empty_frames", config.skip_empty_frames);
+    config.include_frame_analysis = json.get_bool("include_frame_analysis", config.include_frame_analysis);
+    config.upload_script = json.get("upload_script", config.upload_script);
+    
+    // TODO: Parse decryption_keys array from JSON config
+    // For now, use command line -k options for key specification
+    
     return true;
 }
 
@@ -127,6 +184,7 @@ void print_usage(const std::string& program_name) {
     std::cout << "  -v, --verbose           Enable verbose output\n";
     std::cout << "  -q, --quiet             Quiet mode (minimal output)\n";
     std::cout << "  -r, --recursive         Process subdirectories recursively\n";
+    std::cout << "  -f, --foreground        Run API service in foreground (don't fork)\n";
     std::cout << "  -k, --key KEYID:KEY     Add decryption key (hex format)\n";
     std::cout << "                          Key length determines algorithm:\n";
     std::cout << "                          5 bytes = ADP/RC4, 8 bytes = DES-OFB, 32 bytes = AES-256\n\n";
@@ -351,6 +409,7 @@ int main(int argc, char* argv[]) {
         bool verbose = false;
         bool quiet = false;
         bool recursive = false;
+        bool foreground = false;
         bool show_help = false;
         bool enable_json = false;
         bool enable_wav = false;
@@ -373,6 +432,8 @@ int main(int argc, char* argv[]) {
                 quiet = true;
             } else if (arg == "-r" || arg == "--recursive") {
                 recursive = true;
+            } else if (arg == "-f" || arg == "--foreground") {
+                foreground = true;
             } else if (arg == "-c" || arg == "--config") {
                 if (i + 1 < argc && argv[i + 1][0] != '-') {
                     config_file = argv[++i];
@@ -447,6 +508,9 @@ int main(int argc, char* argv[]) {
             }
         }
         
+        // Initialize config
+        DecoderConfig config;
+        
         // Handle config file mode
         if (use_config_file) {
             if (show_help) {
@@ -454,7 +518,6 @@ int main(int argc, char* argv[]) {
                 return 0;
             }
             
-            DecoderConfig config;
             if (!parse_config_file(config_file, config)) {
                 return 1;
             }
@@ -465,6 +528,7 @@ int main(int argc, char* argv[]) {
             if (verbose) config.verbose = true;
             if (quiet) config.quiet = true;
             if (recursive) config.recursive = true;
+            if (foreground) config.foreground = true;
             if (enable_json) config.enable_json = true;
             if (enable_wav) config.enable_wav = true;
             if (enable_text) config.enable_text = true;
@@ -488,13 +552,13 @@ int main(int argc, char* argv[]) {
         }
         
         // Show help or check for required arguments
-        if (show_help || input_path.empty()) {
+        if (show_help || (input_path.empty() && config.service_mode != "api")) {
             print_usage(argv[0]);
             return show_help ? 0 : 1;
         }
         
         // Require at least one output format (unless using config file with service mode)
-        if (!enable_json && !enable_wav && !enable_text && !enable_csv) {
+        if (config.service_mode != "api" && !enable_json && !enable_wav && !enable_text && !enable_csv) {
             std::cerr << "Error: Must specify at least one output format (--json, --wav, --text, or --csv)\n";
             std::cerr << "Use -h for help or -c for config file mode\n";
             return 1;
@@ -512,9 +576,77 @@ int main(int argc, char* argv[]) {
 
         if (!quiet && verbose) {
             std::cout << "trunk-decoder v1.0\n";
-            std::cout << "Input: " << input_path << "\n";
+            if (config.service_mode != "api") {
+                std::cout << "Input: " << input_path << "\n";
+            }
             std::cout << "Output directory: " << output_dir << "\n";
             std::cout << std::endl;
+        }
+
+        // Handle service mode (API mode) - skip file processing
+        if (config.service_mode == "api") {
+            
+            // Use configured port
+            int port = config.api_port;
+            
+            ApiService api_service(port, output_dir, verbose, config.foreground);
+            
+            // Configure authentication
+            if (!config.auth_token.empty()) {
+                api_service.set_auth_token(config.auth_token);
+                if (!quiet) {
+                    std::cout << "API authentication enabled" << std::endl;
+                }
+            }
+            
+            // Configure HTTPS/SSL
+            if (!config.ssl_cert.empty() && !config.ssl_key.empty()) {
+                api_service.enable_https(config.ssl_cert, config.ssl_key);
+                if (!quiet) {
+                    std::cout << "HTTPS/SSL enabled with cert: " << config.ssl_cert << std::endl;
+                }
+            }
+            
+            // Configure upload script
+            if (!config.upload_script.empty()) {
+                api_service.set_upload_script(config.upload_script);
+                if (!quiet) {
+                    std::cout << "Upload script configured: " << config.upload_script << std::endl;
+                }
+            }
+            
+            // Configure decryption keys
+            if (!des_keys.empty() || !aes_keys.empty() || !adp_keys.empty()) {
+                api_service.enable_decryption(true);
+                
+                for (const auto& key_pair : des_keys) {
+                    api_service.add_des_key(key_pair.first, key_pair.second);
+                }
+                for (const auto& key_pair : aes_keys) {
+                    api_service.add_aes_key(key_pair.first, key_pair.second);
+                }
+                for (const auto& key_pair : adp_keys) {
+                    api_service.add_adp_key(key_pair.first, key_pair.second);
+                }
+                
+                if (!quiet) {
+                    int total_keys = des_keys.size() + aes_keys.size() + adp_keys.size();
+                    std::cout << "API service configured with " << total_keys << " encryption key(s)" << std::endl;
+                }
+            }
+            
+            if (!quiet) {
+                std::cout << "Starting trunk-decoder API service on port " << port << std::endl;
+                std::cout << "Output directory: " << output_dir << std::endl;
+                std::cout << "Press Ctrl+C to stop the service" << std::endl;
+            }
+            
+            if (!api_service.start()) {
+                std::cerr << "Failed to start API service on port " << port << std::endl;
+                return 1;
+            }
+            
+            return 0;
         }
 
         std::vector<std::string> files_to_process;
@@ -575,7 +707,7 @@ int main(int argc, char* argv[]) {
             }
         }
         
-        // Process all files
+        // Process all files (file mode)
         int successful = 0;
         int failed = 0;
         auto start_time = std::chrono::steady_clock::now();

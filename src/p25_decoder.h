@@ -71,6 +71,7 @@ private:
     
     // JSON metadata output
     CallMetadata metadata_;
+    std::string external_metadata_;
     
     // IMBE decoder components
     bool imbe_decoder_initialized_;
@@ -132,6 +133,9 @@ public:
     
     // Get call information
     const CallMetadata& get_call_metadata() const { return metadata_; }
+    
+    // Set metadata from external source (API)
+    void set_external_metadata(const std::string& json_metadata);
 };
 
 #endif // P25_DECODER_H

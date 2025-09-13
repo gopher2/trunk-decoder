@@ -65,6 +65,8 @@ bool P25FrameParser::read_frame(P25Frame& frame) {
     frame.nac = (header[1] << 8) | header[2];
     frame.length = (header[3] << 8) | header[4];
     
+    // Frame length logging removed - not needed for normal operation
+    
     // Set frame info
     frame.frame_type_name = get_frame_type_name(frame.duid);
     frame.is_voice_frame = (frame.duid == 0x05 || frame.duid == 0x0A); // LDU1 or LDU2
@@ -74,9 +76,8 @@ bool P25FrameParser::read_frame(P25Frame& frame) {
     file_.read(reinterpret_cast<char*>(frame.data.data()), frame.length);
     
     if (file_.gcount() != frame.length) {
-        std::cerr << "Warning: Expected " << frame.length << " bytes, got " << file_.gcount() << std::endl;
         frame.data.resize(file_.gcount());
-        return false;
+        // Continue parsing instead of stopping - this allows processing of partial data
     }
     
     // Parse encryption fields for LDU2 frames

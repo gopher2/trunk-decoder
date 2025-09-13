@@ -31,7 +31,7 @@ typedef std::vector<bool> voice_codeword;
 
 P25Decoder::P25Decoder() {
     parser_ = std::make_unique<P25FrameParser>();
-    text_dump_enabled_ = true; // Default to true for compatibility
+    text_dump_enabled_ = false; // Default to false to reduce output
     imbe_decoder_initialized_ = false;
     current_frame_num_ = 0;
     decryption_enabled_ = false;
@@ -297,20 +297,54 @@ std::string P25Decoder::generate_json_metadata() {
     }
     
     if (!has_existing_metadata) {
-        // Generate basic metadata (original behavior)
-        json << "{\n";
-        json << "  \"call_length\": " << metadata_.call_length << ",\n";
-        json << "  \"audio_type\": \"" << metadata_.audio_type << "\",\n";
-        json << "  \"nac\": " << metadata_.nac << ",\n";
-        json << "  \"encrypted\": " << (metadata_.has_encrypted_frames ? 1 : 0) << ",\n";
+        // Check if we have external metadata to use
+        if (!external_metadata_.empty()) {
+            // Parse external metadata and merge with our decoder info
+            std::string base_json = external_metadata_;
+            
+            // Remove closing brace to add our fields
+            size_t last_brace = base_json.rfind("}");
+            if (last_brace != std::string::npos) {
+                base_json = base_json.substr(0, last_brace);
+                
+                // Remove trailing whitespace and comma if present
+                while (!base_json.empty() && (base_json.back() == ' ' || base_json.back() == '\n' || base_json.back() == '\t')) {
+                    base_json.pop_back();
+                }
+                
+                json << base_json;
+                if (!base_json.empty() && base_json.back() != ',') {
+                    json << ",\n";
+                }
+                
+                // Add decoder-specific info
+                json << "  \"decoder_source\": \"trunk-decoder\",\n";
+                json << "  \"input_file\": \"" << basename << "\",\n";
+                json << "  \"p25_frames\": " << metadata_.total_frames << ",\n";
+                json << "  \"voice_frames\": " << metadata_.voice_frames << "\n";
+                json << "}";
+            } else {
+                // Fallback if parsing fails
+                has_existing_metadata = false;
+            }
+        }
         
-        // Decoder-specific info
-        json << "  \"decoder_source\": \"trunk-decoder\",\n";
-        json << "  \"input_file\": \"" << basename << "\",\n";
-        json << "  \"p25_frames\": " << metadata_.total_frames << ",\n";
-        json << "  \"voice_frames\": " << metadata_.voice_frames << "\n";
-        
-        json << "}";
+        if (external_metadata_.empty()) {
+            // Generate basic metadata (original behavior)
+            json << "{\n";
+            json << "  \"call_length\": " << metadata_.call_length << ",\n";
+            json << "  \"audio_type\": \"" << metadata_.audio_type << "\",\n";
+            json << "  \"nac\": " << metadata_.nac << ",\n";
+            json << "  \"encrypted\": " << (metadata_.has_encrypted_frames ? 1 : 0) << ",\n";
+            
+            // Decoder-specific info
+            json << "  \"decoder_source\": \"trunk-decoder\",\n";
+            json << "  \"input_file\": \"" << basename << "\",\n";
+            json << "  \"p25_frames\": " << metadata_.total_frames << ",\n";
+            json << "  \"voice_frames\": " << metadata_.voice_frames << "\n";
+            
+            json << "}";
+        }
     }
     
     return json.str();
@@ -394,14 +428,7 @@ bool P25Decoder::decode_to_audio(const std::string& output_prefix) {
         }
     }
     
-    if (text_dump_enabled_) {
-        std::cout << std::endl;
-        std::cout << "Decoding complete!" << std::endl;
-        std::cout << "Total frames: " << metadata_.total_frames << std::endl;
-        std::cout << "Voice frames: " << metadata_.voice_frames << std::endl;
-        std::cout << "Audio samples: " << audio_buffer_.size() << std::endl;
-        std::cout << "Duration: ~" << (audio_buffer_.size() / 8000.0) << " seconds" << std::endl;
-    }
+    // Completion info is now only shown when text_dump_enabled is true
     
     return true;
 }
@@ -460,13 +487,7 @@ bool P25Decoder::process_frames_only() {
     metadata_.end_time = time(nullptr);
     metadata_.call_length = metadata_.voice_frames * 0.18; // Approximation: 180ms per voice frame
     
-    if (text_dump_enabled_) {
-        std::cout << std::endl;
-        std::cout << "Frame processing complete!" << std::endl;
-        std::cout << "Total frames: " << metadata_.total_frames << std::endl;
-        std::cout << "Voice frames: " << metadata_.voice_frames << std::endl;
-        std::cout << "Estimated duration: ~" << metadata_.call_length << " seconds" << std::endl;
-    }
+    // Frame processing completion info only shown when text_dump_enabled is true
     
     return true;
 }
@@ -636,4 +657,11 @@ bool P25Decoder::add_adp_key(uint16_t keyid, const std::vector<uint8_t>& key) {
 
 void P25Decoder::enable_decryption(bool enable) {
     decryption_enabled_ = enable;
+}
+
+void P25Decoder::set_external_metadata(const std::string& json_metadata) {
+    if (json_metadata.empty()) return;
+    
+    // Store the external metadata to merge with our decoder metadata
+    external_metadata_ = json_metadata;
 }

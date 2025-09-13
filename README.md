@@ -232,6 +232,10 @@ Each P25 frame in the input file follows this format:
 
 trunk-decoder supports JSON configuration files for batch processing and service deployment.
 
+**Sample Configurations**: Use the provided config files as starting points:
+- `config.example.json` - Basic configuration with decryption keys
+- `config.service.json` - API service mode configuration
+
 ### Basic Config File Format
 
 ```json
@@ -256,7 +260,7 @@ trunk-decoder supports JSON configuration files for batch processing and service
 ```json
 {
   "service_mode": "api",
-  "api_endpoint": "http://localhost:8080/api/v1/decode",
+  "api_endpoint": "http://localhost:3000/api/v1/decode",
   
   "enable_json": true,
   "enable_wav": true,
@@ -265,7 +269,174 @@ trunk-decoder supports JSON configuration files for batch processing and service
   "output_dir": "/tmp/trunk-decoder/",
   "audio_format": "wav",
   "audio_sample_rate": 8000,
-  "include_frame_analysis": true
+  "verbose": true,
+  "process_encrypted": true
+}
+```
+
+#### Running as API Service
+
+Start trunk-decoder in API service mode:
+
+```bash
+./trunk-decoder -c config-api-service.json
+```
+
+The service will start on the configured port (default: 3000) and listen for decode requests.
+
+#### API Endpoints
+
+**POST /api/v1/decode**
+- Accepts multipart/form-data with:
+  - `p25_file`: Binary P25 file data
+  - `metadata`: JSON call metadata (optional)
+- Returns JSON response with processed files and statistics
+
+**GET /api/v1/status**
+- Returns service status and version information
+
+#### API Security
+
+The trunk-decoder API supports authentication and HTTPS/TLS encryption for secure deployments.
+
+##### Authentication
+
+Authentication is enabled by setting an auth token in the service configuration:
+
+```json
+{
+  "service_mode": "api",
+  "api_port": 3000,
+  "auth_token": "your-secret-token-here",
+  "output_dir": "/tmp/trunk-decoder/"
+}
+```
+
+Clients can authenticate using either:
+
+1. **Bearer Token** (recommended):
+```bash
+curl -X POST https://localhost:3000/api/v1/decode \
+  -H "Authorization: Bearer your-secret-token-here" \
+  -F "p25_file=@call_123.p25"
+```
+
+2. **X-API-Key Header**:
+```bash
+curl -X POST https://localhost:3000/api/v1/decode \
+  -H "X-API-Key: your-secret-token-here" \
+  -F "p25_file=@call_123.p25"
+```
+
+##### HTTPS/TLS Encryption
+
+Enable HTTPS by providing SSL certificate and key files:
+
+```json
+{
+  "service_mode": "api",
+  "api_port": 8443,
+  "auth_token": "your-secret-token-here",
+  "ssl_cert": "/path/to/certificate.pem",
+  "ssl_key": "/path/to/private_key.pem",
+  "output_dir": "/tmp/trunk-decoder/"
+}
+```
+
+**Self-Signed Certificate Example:**
+```bash
+# Generate private key
+openssl genrsa -out trunk-decoder.key 2048
+
+# Generate self-signed certificate (valid for 365 days)
+openssl req -new -x509 -key trunk-decoder.key -out trunk-decoder.crt -days 365 \
+  -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost"
+
+# Convert to PEM format (if needed)
+cat trunk-decoder.crt trunk-decoder.key > trunk-decoder.pem
+```
+
+**Security Considerations:**
+- Use strong, randomly generated auth tokens (32+ characters)
+- Store certificates and keys in secure locations with appropriate file permissions (600)
+- Consider using a reverse proxy (nginx, Apache) for production deployments
+- Rotate auth tokens and certificates regularly
+- Use proper CA-signed certificates for production environments
+
+#### trunk-recorder Plugin Configuration
+
+Configure the trunk-decoder plugin in trunk-recorder's configuration:
+
+```json
+{
+  "plugins": [
+    {
+      "name": "trunk_decoder",
+      "library": "libtrunkrec_plugin_trunk_decoder.so",
+      "enabled": true,
+      "server": "https://decoder.example.com:8443/api/v1/decode",
+      "auth_token": "your-secret-token-here",
+      "verify_ssl": true,
+      "timeout": 30,
+      "systems": [
+        {
+          "short_name": "system1",
+          "enabled": true,
+          "server": "https://system1-decoder.example.com:8443/api/v1/decode",
+          "auth_token": "system1-specific-token",
+          "verify_ssl": true,
+          "compress_data": false
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Configuration Options:**
+- `server`: Full URL to trunk-decoder API endpoint (include https:// for encrypted connections)
+- `auth_token`: Authentication token for API access
+- `verify_ssl`: Enable/disable SSL certificate verification (default: true)
+- `timeout`: Request timeout in seconds (default: 30)
+- `enabled`: Enable/disable the plugin globally or per-system
+- `compress_data`: Enable HTTP compression for data transfer (default: false)
+- System-specific settings override global defaults
+
+**Note:** The plugin only sends P25 files and metadata to trunk-decoder for processing. All decoding, decryption, and output generation happens on the trunk-decoder side. The plugin does not write any output files locally.
+
+#### API Service Behavior
+
+When running in API service mode, trunk-decoder:
+- Processes P25 files submitted via HTTP POST requests
+- Returns processing results and statistics in JSON format  
+- Currently writes temporary output files to the configured output directory
+- Returns file paths in the API response for client access
+
+**Future Enhancement:** For production deployments, the API could be enhanced to return processed audio data directly in the HTTP response rather than writing files to disk.
+
+#### Example API Usage
+
+```bash
+# Using curl to send a P25 file for processing
+curl -X POST http://localhost:3000/api/v1/decode \
+  -F "p25_file=@call_123.p25" \
+  -F 'metadata={"talkgroup":123,"freq":856187500}'
+```
+
+Response:
+```json
+{
+  "success": true,
+  "files": {
+    "wav_file": "/tmp/trunk-decoder-output/api_call_1757722345.wav",
+    "json_file": "/tmp/trunk-decoder-output/api_call_1757722345.json"
+  },
+  "stats": {
+    "frames_processed": "23",
+    "voice_frames": "23", 
+    "audio_samples": "33120",
+    "duration_seconds": "4.14"
+  }
 }
 ```
 
@@ -288,6 +459,62 @@ trunk-decoder supports JSON configuration files for batch processing and service
 | `audio_format` | string | "wav" | Audio output format |
 | `audio_sample_rate` | integer | 8000 | Audio sample rate (Hz) |
 
+### Complete Configuration Template
+
+Here's a comprehensive configuration template with all available options:
+
+```json
+{
+  "input_path": "/path/to/p25/files/",
+  "output_dir": "/path/to/output/",
+  "recursive": true,
+  "enable_json": true,
+  "enable_wav": true,
+  "enable_text": false,
+  "verbose": false,
+  "quiet": false,
+  "process_encrypted": true,
+  "skip_empty_frames": false,
+  "include_frame_analysis": true,
+  "service_mode": "file",
+  "api_endpoint": "http://localhost:3000/api/v1/decode",
+  "audio_format": "wav",
+  "decryption_keys": [
+    {
+      "keyid": "0x001",
+      "key": "0102030405060708",
+      "description": "DES-OFB key (8 bytes)"
+    },
+    {
+      "keyid": "0x002",
+      "key": "0102030405",
+      "description": "ADP/RC4 key (5 bytes)"  
+    },
+    {
+      "keyid": "0x003",
+      "key": "0102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F20",
+      "description": "AES-256 key (32 bytes)"
+    }
+  ]
+}
+```
+
+**Key Length Determines Algorithm:**
+- 5 bytes = ADP/RC4 encryption
+- 8 bytes = DES-OFB encryption  
+- 32 bytes = AES-256 encryption
+
+**Configuration Scenarios:**
+
+**Batch Processing:**
+- Set `"service_mode": "file"`
+- Configure `input_path` and `output_dir`
+- Enable desired output formats (`enable_json`, `enable_wav`, etc.)
+
+**API Service:**
+- Set `"service_mode": "api"`
+- Configure `api_endpoint` URL
+- Set `output_dir` for temporary files
 
 ## Author
 
