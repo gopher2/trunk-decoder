@@ -20,10 +20,10 @@ private:
     bool copy_mp3_;
     bool copy_m4a_;
     bool copy_p25_;
+    std::string p25_output_mode_;
     bool copy_json_;
     bool create_symlinks_;
     bool verbose_;
-    std::string post_copy_script_;
     
     // Statistics
     int files_processed_;
@@ -88,10 +88,10 @@ public:
         copy_mp3_ = config_.value("copy_mp3", true);
         copy_m4a_ = config_.value("copy_m4a", true);
         copy_p25_ = config_.value("copy_p25", true);
+        p25_output_mode_ = config_.value("p25_output_mode", "voice");
         copy_json_ = config_.value("copy_json", true);
         create_symlinks_ = config_.value("create_symlinks", false);
         verbose_ = config_.value("verbose", false);
-        post_copy_script_ = config_.value("post_copy_script", "");
         enabled_ = config_.value("enabled", true);
         
         if (verbose_) {
@@ -102,9 +102,9 @@ public:
             std::cout << "  Copy MP3: " << (copy_mp3_ ? "YES" : "NO") << std::endl;
             std::cout << "  Copy M4A: " << (copy_m4a_ ? "YES" : "NO") << std::endl;
             std::cout << "  Copy P25: " << (copy_p25_ ? "YES" : "NO") << std::endl;
+            std::cout << "  P25 Output Mode: " << p25_output_mode_ << std::endl;
             std::cout << "  Copy JSON: " << (copy_json_ ? "YES" : "NO") << std::endl;
             std::cout << "  Create Symlinks: " << (create_symlinks_ ? "YES" : "NO") << std::endl;
-            std::cout << "  Post Copy Script: " << (post_copy_script_.empty() ? "NONE" : post_copy_script_) << std::endl;
         }
         
         return 0;
@@ -172,7 +172,21 @@ public:
             // Handle P25 files
             if (copy_p25_) {
                 std::string p25_file = base_dir + "/" + base_name + ".p25";
-                copy_file_if_exists(p25_file, output_dir, "P25");
+                
+                // Check P25 output mode
+                bool should_copy_p25 = true;
+                if (p25_output_mode_ == "voice") {
+                    // Only copy P25 files for voice calls (check audio_type in JSON)
+                    if (call_info.call_json.contains("audio_type")) {
+                        std::string audio_type = call_info.call_json["audio_type"];
+                        should_copy_p25 = (audio_type == "digital" || audio_type == "analog");
+                    }
+                }
+                // p25_output_mode_ == "always" copies all P25 files
+                
+                if (should_copy_p25) {
+                    copy_file_if_exists(p25_file, output_dir, "P25");
+                }
             }
             
             // Also check converted_files map for additional formats
@@ -201,11 +215,6 @@ public:
                         std::cout << "[FileOutput] Copied JSON: " << dest_path << std::endl;
                     }
                 }
-            }
-            
-            // Run post-copy script if configured
-            if (!post_copy_script_.empty()) {
-                run_post_copy_script(audio_file, output_dir, call_info);
             }
             
             files_successful_++;
@@ -320,26 +329,6 @@ private:
         return oss.str();
     }
     
-    void run_post_copy_script(const std::string& original_file, const std::string& output_dir, const Call_Data_t& call_info) {
-        try {
-            std::ostringstream command;
-            command << post_copy_script_ << " \"" << original_file << "\" \"" << output_dir << "\" "
-                    << call_info.talkgroup << " " << call_info.source_id << " \"" << call_info.system_short_name << "\"";
-            
-            if (verbose_) {
-                std::cout << "[FileOutput] Running post-copy script: " << command.str() << std::endl;
-            }
-            
-            int result = std::system(command.str().c_str());
-            if (result != 0 && verbose_) {
-                std::cout << "[FileOutput] Post-copy script returned: " << result << std::endl;
-            }
-        } catch (const std::exception& e) {
-            if (verbose_) {
-                std::cout << "[FileOutput] Error running post-copy script: " << e.what() << std::endl;
-            }
-        }
-    }
 };
 
 TRUNK_DECODER_PLUGIN_FACTORY(File_Output)
