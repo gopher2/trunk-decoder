@@ -9,7 +9,7 @@
 #include <ctime>
 
 ApiService::ApiService(int port, const std::string& output_dir, bool verbose, bool foreground) 
-    : output_dir_(output_dir), verbose_(verbose), foreground_(foreground) {
+    : output_dir_(output_dir), verbose_(verbose), foreground_(foreground), audio_format_("wav"), audio_bitrate_(0) {
     http_service_ = std::make_unique<HttpService>(port);
     
     // Register API endpoints
@@ -270,6 +270,10 @@ void ApiService::handle_decode_request(const HttpRequest& request, HttpResponse&
         std::string output_base = folder_path + "/" + base_filename;
         std::string wav_file = output_base + ".wav";
         std::string json_file = output_base + ".json";
+        
+        // Configure decoder with audio format
+        decoder_.set_audio_format(audio_format_);
+        decoder_.set_audio_bitrate(audio_bitrate_);
         
         // Process the P25 file using the decoder
         if (!decoder_.open_p25_file(p25_temp_file)) {

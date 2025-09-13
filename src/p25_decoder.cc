@@ -11,6 +11,10 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
+ * 
+ * AUDIO CODEC NOTICE: This software may use audio codecs that are subject
+ * to patent licensing requirements. Users are responsible for ensuring
+ * compliance with applicable patent licenses for MP3, AAC, and other codecs.
  */
 
 #include "p25_decoder.h"
@@ -20,6 +24,7 @@
 #include <iomanip>
 #include <ctime>
 #include <cmath>
+#include <cstdio>
 
 // OP25 IMBE decoder includes (based on trunk-recorder implementation)
 #include "imbe_vocoder/imbe_vocoder.h"
@@ -35,6 +40,8 @@ P25Decoder::P25Decoder() {
     imbe_decoder_initialized_ = false;
     current_frame_num_ = 0;
     decryption_enabled_ = false;
+    audio_format_ = "wav";
+    audio_bitrate_ = 0;
     
     // Initialize IMBE vocoder (trunk-recorder approach)
     vocoder_ = new imbe_vocoder();
@@ -417,6 +424,23 @@ bool P25Decoder::decode_to_audio(const std::string& output_prefix) {
     // Close audio file
     close_audio_output();
     
+    // Convert to modern format if requested
+    if (audio_format_ != "wav") {
+        std::string wav_file = output_prefix + ".wav";
+        std::string extension;
+        if (audio_format_ == "mp3") extension = "mp3";
+        else if (audio_format_ == "m4a") extension = "m4a";
+        else if (audio_format_ == "opus") extension = "opus";
+        else if (audio_format_ == "webm") extension = "webm";
+        
+        std::string final_audio_file = output_prefix + "." + extension;
+        
+        if (convert_to_modern_format(wav_file, final_audio_file)) {
+            // Keep WAV file - don't remove it, users may want both formats
+            // std::remove(wav_file.c_str()); // Commented out - preserve WAV
+        }
+    }
+    
     // Write JSON metadata
     std::string json_filename = output_prefix + ".json";
     std::ofstream json_file(json_filename);
@@ -664,4 +688,46 @@ void P25Decoder::set_external_metadata(const std::string& json_metadata) {
     
     // Store the external metadata to merge with our decoder metadata
     external_metadata_ = json_metadata;
+}
+
+void P25Decoder::set_audio_format(const std::string& format) {
+    audio_format_ = format;
+}
+
+void P25Decoder::set_audio_bitrate(int bitrate) {
+    audio_bitrate_ = bitrate;
+}
+
+bool P25Decoder::convert_to_modern_format(const std::string& wav_file, const std::string& output_file) {
+    std::string command;
+    
+    // Determine bitrate - use configured value or format defaults
+    int bitrate = audio_bitrate_;
+    if (bitrate == 0) { // Auto-select based on format
+        if (audio_format_ == "mp3" || audio_format_ == "m4a") bitrate = 64;
+        else if (audio_format_ == "opus" || audio_format_ == "webm") bitrate = 32;
+    }
+    
+    // Base command with mono forced and sample rate
+    std::string base_opts = " -ac 1 -ar 8000";
+    std::string bitrate_str = std::to_string(bitrate) + "k";
+    
+    if (audio_format_ == "mp3") {
+        // MP3 - legacy compatibility, good browser support
+        command = "ffmpeg -i \"" + wav_file + "\"" + base_opts + " -c:a libmp3lame -b:a " + bitrate_str + " \"" + output_file + "\" 2>/dev/null";
+    } else if (audio_format_ == "m4a") {
+        // AAC in M4A container - web optimized, good quality/size balance
+        command = "ffmpeg -i \"" + wav_file + "\"" + base_opts + " -c:a aac -b:a " + bitrate_str + " -movflags +faststart \"" + output_file + "\" 2>/dev/null";
+    } else if (audio_format_ == "opus") {
+        // Opus codec - best compression for voice
+        command = "ffmpeg -i \"" + wav_file + "\"" + base_opts + " -c:a libopus -b:a " + bitrate_str + " \"" + output_file + "\" 2>/dev/null";
+    } else if (audio_format_ == "webm") {
+        // WebM container with Opus - native web format
+        command = "ffmpeg -i \"" + wav_file + "\"" + base_opts + " -c:a libopus -b:a " + bitrate_str + " \"" + output_file + "\" 2>/dev/null";
+    } else {
+        return false;
+    }
+    
+    int result = std::system(command.c_str());
+    return result == 0;
 }

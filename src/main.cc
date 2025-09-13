@@ -55,7 +55,8 @@ struct DecoderConfig {
     
     // Output settings
     int audio_sample_rate = 8000;
-    std::string audio_format = "wav"; // Future: "wav", "aac", "mp3"
+    std::string audio_format = "wav"; // "wav", "mp3", "m4a", "opus", "webm"
+    int audio_bitrate = 0; // 0 = auto, otherwise kbps (e.g. 64, 128)
     bool include_frame_analysis = true;
     
     // Processing options
@@ -165,6 +166,7 @@ bool parse_config_file(const std::string& config_path, DecoderConfig& config) {
     config.skip_empty_frames = json.get_bool("skip_empty_frames", config.skip_empty_frames);
     config.include_frame_analysis = json.get_bool("include_frame_analysis", config.include_frame_analysis);
     config.upload_script = json.get("upload_script", config.upload_script);
+    config.audio_bitrate = std::stoi(json.get("audio_bitrate", std::to_string(config.audio_bitrate)));
     
     // TODO: Parse decryption_keys array from JSON config
     // For now, use command line -k options for key specification
@@ -175,7 +177,9 @@ bool parse_config_file(const std::string& config_path, DecoderConfig& config) {
 void print_usage(const std::string& program_name) {
     std::cout << "Usage: " << program_name << " [options] [p25_file_or_directory]\n";
     std::cout << "       " << program_name << " -c <config.json>\n\n";
-    std::cout << "trunk-decoder - Decode P25 files to audio and metadata\n\n";
+    std::cout << "trunk-decoder - Decode P25 files to audio and metadata\n";
+    std::cout << "Audio codec support requires FFmpeg with appropriate codecs installed.\n";
+    std::cout << "MP3 encoding may require patent licensing in some jurisdictions.\n\n";
     std::cout << "Options:\n";
     std::cout << "  -h, --help              Show this help message\n";
     std::cout << "  -c, --config FILE       Use JSON config file for all settings\n";
@@ -187,15 +191,18 @@ void print_usage(const std::string& program_name) {
     std::cout << "  -f, --foreground        Run API service in foreground (don't fork)\n";
     std::cout << "  -k, --key KEYID:KEY     Add decryption key (hex format)\n";
     std::cout << "                          Key length determines algorithm:\n";
-    std::cout << "                          5 bytes = ADP/RC4, 8 bytes = DES-OFB, 32 bytes = AES-256\n\n";
+    std::cout << "                          5 bytes = ADP/RC4, 8 bytes = DES-OFB, 32 bytes = AES-256\n";
+    std::cout << "  -b, --bitrate RATE      Audio bitrate in kbps (default: auto per format)\n\n";
     std::cout << "Output format options (must specify at least one):\n";
     std::cout << "  --json                  Generate JSON metadata files\n";
     std::cout << "  --wav                   Generate WAV audio files\n";
     std::cout << "  --text                  Generate text dump files\n";
     std::cout << "  --csv                   Generate CSV frame analysis files\n\n";
     std::cout << "Additional format options:\n";
-    std::cout << "  --aac                   Generate AAC audio files (unimplemented)\n";
-    std::cout << "  --mp3                   Generate MP3 audio files (unimplemented)\n";
+    std::cout << "  --mp3                   Generate MP3 audio files (legacy compatibility)\n";
+    std::cout << "  --m4a                   Generate M4A/AAC audio files (web-optimized)\n";
+    std::cout << "  --opus                  Generate Opus audio files (best compression)\n";
+    std::cout << "  --webm                  Generate WebM/Opus audio files (web native)\n";
     std::cout << "  --transcript            Generate voice transcription (unimplemented)\n\n";
     std::cout << "Input:\n";
     std::cout << "  Single file:            Process one .p25 file\n";
@@ -310,7 +317,7 @@ std::vector<std::string> find_p25_files(const std::string& directory_path, bool 
 
 bool process_single_file(const std::string& input_file, const std::string& output_dir, 
                         bool verbose, bool quiet, bool enable_json, bool enable_wav, bool enable_text, bool enable_csv,
-                        P25Decoder& decoder) {
+                        const std::string& audio_format, int audio_bitrate, P25Decoder& decoder) {
     
     // Open P25 file
     if (!decoder.open_p25_file(input_file)) {
@@ -334,6 +341,8 @@ bool process_single_file(const std::string& input_file, const std::string& outpu
 
     // Configure decoder
     decoder.enable_text_dump(enable_text || verbose); // Enable text dump if requested or verbose
+    decoder.set_audio_format(audio_format);
+    decoder.set_audio_bitrate(audio_bitrate);
 
     // Decode based on enabled formats
     bool success = true;
@@ -406,6 +415,8 @@ int main(int argc, char* argv[]) {
         std::string input_path;
         std::string output_dir = "."; // Default to current directory
         std::string config_file;
+        std::string audio_format = "wav";
+        int audio_bitrate = 0;
         bool verbose = false;
         bool quiet = false;
         bool recursive = false;
@@ -456,6 +467,13 @@ int main(int argc, char* argv[]) {
                     std::cerr << "Error: -o requires an argument\n";
                     return 1;
                 }
+            } else if (arg == "-b" || arg == "--bitrate") {
+                if (i + 1 < argc && argv[i + 1][0] != '-') {
+                    audio_bitrate = std::stoi(argv[++i]);
+                } else {
+                    std::cerr << "Error: -b requires an argument\n";
+                    return 1;
+                }
             } else if (arg == "--json") {
                 enable_json = true;
             } else if (arg == "--wav") {
@@ -490,12 +508,18 @@ int main(int argc, char* argv[]) {
                     std::cerr << "Error: -k requires a key specification\n";
                     return 1;
                 }
-            } else if (arg == "--aac") {
-                std::cerr << "Error: AAC output format is not yet implemented\n";
-                return 1;
             } else if (arg == "--mp3") {
-                std::cerr << "Error: MP3 output format is not yet implemented\n";
-                return 1;
+                audio_format = "mp3";
+                enable_wav = true;
+            } else if (arg == "--m4a") {
+                audio_format = "m4a";
+                enable_wav = true;
+            } else if (arg == "--opus") {
+                audio_format = "opus";
+                enable_wav = true;
+            } else if (arg == "--webm") {
+                audio_format = "webm";
+                enable_wav = true;
             } else if (arg == "--transcript") {
                 std::cerr << "Error: Voice transcription is not yet implemented\n";
                 return 1;
@@ -542,6 +566,12 @@ int main(int argc, char* argv[]) {
             enable_json = config.enable_json;
             enable_wav = config.enable_wav;
             enable_text = config.enable_text;
+            if (audio_format == "wav") { // Only override if not set by command line
+                audio_format = config.audio_format;
+            }
+            if (audio_bitrate == 0) { // Only override if not set by command line
+                audio_bitrate = config.audio_bitrate;
+            }
             
             if (!quiet) {
                 std::cout << "Using config file: " << config_file << std::endl;
@@ -615,6 +645,17 @@ int main(int argc, char* argv[]) {
                 }
             }
             
+            // Configure audio format
+            api_service.set_audio_format(config.audio_format);
+            api_service.set_audio_bitrate(config.audio_bitrate);
+            if (!quiet && config.audio_format != "wav") {
+                std::cout << "Audio format: " << config.audio_format;
+                if (config.audio_bitrate > 0) {
+                    std::cout << " @ " << config.audio_bitrate << "k";
+                }
+                std::cout << std::endl;
+            }
+            
             // Configure decryption keys
             if (!des_keys.empty() || !aes_keys.empty() || !adp_keys.empty()) {
                 api_service.enable_decryption(true);
@@ -638,6 +679,9 @@ int main(int argc, char* argv[]) {
             if (!quiet) {
                 std::cout << "Starting trunk-decoder API service on port " << port << std::endl;
                 std::cout << "Output directory: " << output_dir << std::endl;
+                if (config.audio_format != "wav") {
+                    std::cout << "Audio codec disclaimer: Codec usage subject to patent/licensing requirements" << std::endl;
+                }
                 std::cout << "Press Ctrl+C to stop the service" << std::endl;
             }
             
@@ -713,7 +757,7 @@ int main(int argc, char* argv[]) {
         auto start_time = std::chrono::steady_clock::now();
 
         for (const auto& file : files_to_process) {
-            if (process_single_file(file, output_dir, verbose, quiet, enable_json, enable_wav, enable_text, enable_csv, decoder)) {
+            if (process_single_file(file, output_dir, verbose, quiet, enable_json, enable_wav, enable_text, enable_csv, audio_format, audio_bitrate, decoder)) {
                 successful++;
             } else {
                 failed++;

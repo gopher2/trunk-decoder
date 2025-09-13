@@ -87,6 +87,8 @@ private:
     
     // Output control
     bool text_dump_enabled_;
+    std::string audio_format_;
+    int audio_bitrate_;
     
     // Decryption support
     std::unique_ptr<P25DESDecrypt> des_decrypt_;
@@ -101,6 +103,7 @@ private:
     void close_audio_output();
     void write_wav_header();
     void finalize_wav_file();
+    bool convert_to_modern_format(const std::string& wav_file, const std::string& output_file);
     
     bool decode_voice_frame(const P25Frame& frame, std::vector<int16_t>& audio_samples);
     void extract_voice_params(const P25Frame& frame);
@@ -124,6 +127,8 @@ public:
     // Configuration
     void set_output_sample_rate(int rate = 8000);
     void enable_text_dump(bool enable = true);
+    void set_audio_format(const std::string& format = "wav");
+    void set_audio_bitrate(int bitrate = 0);
     
     // Decryption methods
     bool add_des_key(uint16_t keyid, const std::vector<uint8_t>& key);
