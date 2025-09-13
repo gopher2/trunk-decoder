@@ -638,7 +638,8 @@ int main(int argc, char* argv[]) {
             // Use configured port
             int port = config.api_port;
             
-            ApiService api_service(port, output_dir, verbose, config.foreground);
+            ApiService api_service(port, output_dir, verbose, config.foreground, 
+                                   config.worker_threads, config.queue_size, config.timeout_ms);
             
             // Configure authentication
             if (!config.auth_token.empty()) {

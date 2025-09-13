@@ -20,6 +20,7 @@ set(SOURCES
     src/p25_adp_decrypt.cc
     src/http_service.cc
     src/api_service.cc
+    src/job_manager.cc
     # OP25 IMBE vocoder files (working trunk-recorder implementation)
     lib/op25/imbe_vocoder/imbe_vocoder.cc
     lib/op25/imbe_vocoder/decode.cc
