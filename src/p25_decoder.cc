@@ -66,6 +66,9 @@ bool P25Decoder::open_p25_file(const std::string& filename) {
     metadata_ = CallMetadata();
     metadata_.start_time = time(nullptr); // For now, use current time
     
+    // Clear audio buffer for new file
+    audio_buffer_.clear();
+    
     return true;
 }
 

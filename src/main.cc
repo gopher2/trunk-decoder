@@ -225,14 +225,16 @@ std::vector<std::string> find_p25_files(const std::string& directory_path, bool 
         if (recursive) {
             for (const auto& entry : fs::recursive_directory_iterator(directory_path)) {
                 if (entry.is_regular_file() && 
-                    entry.path().extension() == ".p25") {
+                    entry.path().extension() == ".p25" &&
+                    entry.file_size() > 0) {  // Skip empty files
                     p25_files.push_back(entry.path().string());
                 }
             }
         } else {
             for (const auto& entry : fs::directory_iterator(directory_path)) {
                 if (entry.is_regular_file() && 
-                    entry.path().extension() == ".p25") {
+                    entry.path().extension() == ".p25" &&
+                    entry.file_size() > 0) {  // Skip empty files
                     p25_files.push_back(entry.path().string());
                 }
             }
