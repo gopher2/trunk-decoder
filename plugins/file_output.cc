@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <iomanip>
+#include <boost/shared_ptr.hpp>
 
 class File_Output : public Base_Plugin {
 private:
@@ -331,7 +332,7 @@ private:
     
 };
 
-// Plugin factory function
-extern "C" boost::shared_ptr<Plugin_Api> create_plugin() {
+// Plugin factory function  
+extern "C" boost::shared_ptr<Plugin_Api> _create_plugin() {
     return boost::shared_ptr<Plugin_Api>(new File_Output());
 }

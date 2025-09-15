@@ -20,6 +20,10 @@
 #include <unistd.h>
 #include <sstream>
 #include <map>
+#include <fstream>
+#include <iomanip>
+#include <cstring>
+#include <vector>
 
 class API_Input : public Base_Input_Plugin {
 private:
@@ -335,11 +339,15 @@ private:
             std::cout << "[API_Input] Processing decode request from trunk-recorder" << std::endl;
         }
         
-        // TODO: Parse the JSON request body to extract call data
-        // TODO: Extract audio file data and metadata
-        // TODO: Create P25_TSBK_Data objects from the call information
+        // Parse multipart form data to extract .p25 files
+        std::vector<uint8_t> p25_data;
+        std::string filename;
         
-        // For now, acknowledge the request
+        if (parse_multipart_data(request, p25_data, filename)) {
+            // Process the .p25 file
+            process_p25_file(p25_data, filename);
+        }
+        
         json response;
         response["status"] = "success";
         response["message"] = "Call decode request received";
@@ -376,6 +384,180 @@ private:
         
         std::string response_str = response.str();
         send(client_fd, response_str.c_str(), response_str.length(), 0);
+    }
+    
+    bool parse_multipart_data(const std::string& request, std::vector<uint8_t>& p25_data, std::string& filename) {
+        // Find the boundary
+        size_t boundary_pos = request.find("boundary=");
+        if (boundary_pos == std::string::npos) {
+            if (verbose_) {
+                std::cout << "[API_Input] No boundary found in multipart data" << std::endl;
+            }
+            return false;
+        }
+        
+        size_t boundary_start = boundary_pos + 9; // length of "boundary="
+        size_t boundary_end = request.find('\r', boundary_start);
+        if (boundary_end == std::string::npos) {
+            boundary_end = request.find('\n', boundary_start);
+        }
+        
+        std::string boundary = "--" + request.substr(boundary_start, boundary_end - boundary_start);
+        
+        if (verbose_) {
+            std::cout << "[API_Input] Extracted boundary: '" << boundary << "'" << std::endl;
+        }
+        
+        // Find the file data
+        size_t file_start = request.find("name=\"p25_file\"");
+        if (file_start == std::string::npos) {
+            if (verbose_) {
+                std::cout << "[API_Input] No p25_file field found" << std::endl;
+            }
+            return false;
+        }
+        
+        // Extract filename
+        size_t filename_start = request.find("filename=\"", file_start);
+        if (filename_start != std::string::npos) {
+            filename_start += 10; // length of "filename=\""
+            size_t filename_end = request.find('"', filename_start);
+            if (filename_end != std::string::npos) {
+                filename = request.substr(filename_start, filename_end - filename_start);
+            }
+        }
+        
+        // Find the start of the file data (after the headers)
+        size_t data_start = request.find("\r\n\r\n", file_start);
+        if (data_start == std::string::npos) {
+            if (verbose_) {
+                std::cout << "[API_Input] No data section found" << std::endl;
+            }
+            return false;
+        }
+        data_start += 4; // Skip the \r\n\r\n
+        
+        // Find the end of the file data (next boundary)
+        size_t data_end = request.find(boundary, data_start);
+        if (data_end == std::string::npos) {
+            if (verbose_) {
+                std::cout << "[API_Input] No end boundary found" << std::endl;
+            }
+            return false;
+        }
+        
+        // Adjust for the \r\n before the boundary
+        if (data_end >= 2 && request.substr(data_end - 2, 2) == "\r\n") {
+            data_end -= 2;
+        }
+        
+        // Extract the binary data
+        size_t data_length = data_end - data_start;
+        p25_data.resize(data_length);
+        std::memcpy(p25_data.data(), request.data() + data_start, data_length);
+        
+        if (verbose_) {
+            std::cout << "[API_Input] Extracted " << data_length << " bytes of P25 data from file: " << filename << std::endl;
+        }
+        
+        return true;
+    }
+    
+    void process_p25_file(const std::vector<uint8_t>& p25_data, const std::string& filename) {
+        if (verbose_) {
+            std::cout << "[API_Input] Processing P25 file: " << filename << " (" << p25_data.size() << " bytes)" << std::endl;
+        }
+        
+        // Create Call_Data_t object for the plugin router
+        Call_Data_t call_data;
+        
+        // Parse filename to extract metadata (format: talkgroup-timestamp_frequency-call_number.p25)
+        std::string base_filename = filename;
+        if (base_filename.length() >= 4 && base_filename.substr(base_filename.length() - 4) == ".p25") {
+            base_filename = base_filename.substr(0, base_filename.length() - 4);
+        }
+        
+        // Extract talkgroup and other info from filename
+        size_t dash_pos = base_filename.find('-');
+        if (dash_pos != std::string::npos) {
+            std::string tg_str = base_filename.substr(0, dash_pos);
+            try {
+                call_data.talkgroup = std::stoul(tg_str);
+            } catch (...) {
+                call_data.talkgroup = 0;
+            }
+        }
+        
+        // Generate unique filenames
+        auto now = std::chrono::system_clock::now();
+        auto time_t = std::chrono::system_clock::to_time_t(now);
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+        
+        std::stringstream ss;
+        ss << std::put_time(std::localtime(&time_t), "%Y%m%d_%H%M%S_")
+           << std::setfill('0') << std::setw(3) << ms.count();
+        std::string timestamp = ss.str();
+        
+        // Save the P25 file
+        std::string p25_filepath = "/Users/dave/Dump/" + timestamp + ".p25";
+        std::ofstream p25_file(p25_filepath, std::ios::binary);
+        if (p25_file.is_open()) {
+            p25_file.write(reinterpret_cast<const char*>(p25_data.data()), p25_data.size());
+            p25_file.close();
+            
+            if (verbose_) {
+                std::cout << "[API_Input] Saved P25 file to: " << p25_filepath << std::endl;
+            }
+        }
+        
+        // Create WAV filename (for compatibility)
+        std::string wav_path = "/Users/dave/Dump/" + timestamp + ".wav";
+        std::string json_path = "/Users/dave/Dump/" + timestamp + ".json";
+        strncpy(call_data.wav_filename, wav_path.c_str(), sizeof(call_data.wav_filename) - 1);
+        strncpy(call_data.json_filename, json_path.c_str(), sizeof(call_data.json_filename) - 1);
+        call_data.wav_filename[sizeof(call_data.wav_filename) - 1] = '\0';
+        call_data.json_filename[sizeof(call_data.json_filename) - 1] = '\0';
+        
+        // Create a simple WAV file or copy the P25 data as WAV for now
+        std::ofstream wav_file(call_data.wav_filename, std::ios::binary);
+        if (wav_file.is_open()) {
+            wav_file.write(reinterpret_cast<const char*>(p25_data.data()), p25_data.size());
+            wav_file.close();
+        }
+        
+        // Create JSON metadata
+        json metadata;
+        metadata["filename"] = filename;
+        metadata["talkgroup"] = call_data.talkgroup;
+        metadata["timestamp"] = timestamp;
+        metadata["size"] = p25_data.size();
+        metadata["format"] = "p25";
+        
+        std::ofstream json_file(call_data.json_filename);
+        if (json_file.is_open()) {
+            json_file << metadata.dump(2);
+            json_file.close();
+        }
+        
+        // Set other call data
+        call_data.source_id = 0;
+        call_data.system_short_name = "unknown";
+        call_data.call_json = metadata;
+        
+        // Send to plugin router if callback is set
+        if (data_callback_) {
+            // Convert to P25_TSBK_Data format
+            P25_TSBK_Data tsbk_data;
+            tsbk_data.source_name = get_plugin_name();
+            tsbk_data.received_time = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            
+            data_callback_(tsbk_data);
+        }
+        
+        if (verbose_) {
+            std::cout << "[API_Input] Successfully processed P25 file" << std::endl;
+        }
     }
 };
 
