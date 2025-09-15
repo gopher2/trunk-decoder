@@ -331,4 +331,7 @@ private:
     
 };
 
-TRUNK_DECODER_PLUGIN_FACTORY(File_Output)
+// Plugin factory function
+extern "C" boost::shared_ptr<Plugin_Api> create_plugin() {
+    return boost::shared_ptr<Plugin_Api>(new File_Output());
+}

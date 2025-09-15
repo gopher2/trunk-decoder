@@ -29,9 +29,15 @@
 #include "input_plugin_manager.h"
 #include "output_plugin_manager.h"
 #include "plugin_router.h"
+#include "plugin_api.h"
+#include <boost/dll/shared_library.hpp>
+#include <boost/dll/import.hpp>
+#include <nlohmann/json.hpp>
 
 // Simple JSON parsing for config (avoiding external dependencies)
 #include <map>
+
+using json = nlohmann::json;
 
 namespace fs = std::filesystem;
 
@@ -114,6 +120,15 @@ struct DecoderConfig {
         bool enabled = true;
     };
     std::vector<OutputPluginConfig> output_plugins;
+    
+    // Regular plugin configuration (for call processing)
+    struct PluginConfig {
+        std::string name;
+        std::string library;
+        json config_data;
+        bool enabled = true;
+    };
+    std::vector<PluginConfig> plugins;
     
     // Routing rules configuration
     struct RoutingRule {
@@ -203,7 +218,6 @@ bool parse_config_file(const std::string& config_path, DecoderConfig& config) {
     config.verbose = json.get_bool("verbose", config.verbose);
     config.quiet = json.get_bool("quiet", config.quiet);
     config.foreground = json.get_bool("foreground", config.foreground);
-    config.service_mode = json.get("service_mode", config.service_mode);
     config.api_endpoint = json.get("api_endpoint", config.api_endpoint);
     config.api_port = std::stoi(json.get("api_port", std::to_string(config.api_port)));
     config.auth_token = json.get("auth_token", config.auth_token);
@@ -215,6 +229,50 @@ bool parse_config_file(const std::string& config_path, DecoderConfig& config) {
     config.include_frame_analysis = json.get_bool("include_frame_analysis", config.include_frame_analysis);
     config.upload_script = json.get("upload_script", config.upload_script);
     config.audio_bitrate = std::stoi(json.get("audio_bitrate", std::to_string(config.audio_bitrate)));
+    
+    // Parse input_plugins array manually using nlohmann::json
+    try {
+        std::ifstream file(config_path);
+        nlohmann::json full_config;
+        file >> full_config;
+        
+        if (full_config.contains("input_plugins") && full_config["input_plugins"].is_array()) {
+            for (const auto& plugin_json : full_config["input_plugins"]) {
+                DecoderConfig::InputPluginConfig plugin_config;
+                plugin_config.name = plugin_json.value("name", "");
+                plugin_config.library = plugin_json.value("library", "");
+                plugin_config.enabled = plugin_json.value("enabled", true);
+                plugin_config.config_data = plugin_json.value("config", nlohmann::json::object());
+                config.input_plugins.push_back(plugin_config);
+            }
+        }
+        
+        // Parse output_plugins array
+        if (full_config.contains("output_plugins") && full_config["output_plugins"].is_array()) {
+            for (const auto& plugin_json : full_config["output_plugins"]) {
+                DecoderConfig::OutputPluginConfig plugin_config;
+                plugin_config.name = plugin_json.value("name", "");
+                plugin_config.library = plugin_json.value("library", "");
+                plugin_config.enabled = plugin_json.value("enabled", true);
+                plugin_config.config_data = plugin_json.value("config", nlohmann::json::object());
+                config.output_plugins.push_back(plugin_config);
+            }
+        }
+        
+        // Parse plugins array (for call processing)
+        if (full_config.contains("plugins") && full_config["plugins"].is_array()) {
+            for (const auto& plugin_json : full_config["plugins"]) {
+                DecoderConfig::PluginConfig plugin_config;
+                plugin_config.name = plugin_json.value("name", "");
+                plugin_config.library = plugin_json.value("library", "");
+                plugin_config.enabled = plugin_json.value("enabled", true);
+                plugin_config.config_data = plugin_json.value("config", nlohmann::json::object());
+                config.plugins.push_back(plugin_config);
+            }
+        }
+    } catch (const std::exception& e) {
+        // Ignore parsing errors for plugins, fallback to defaults
+    }
     
     // TODO: Parse decryption_keys array from JSON config
     // For now, use command line -k options for key specification
@@ -630,13 +688,13 @@ int main(int argc, char* argv[]) {
         }
         
         // Show help or check for required arguments
-        if (show_help || (input_path.empty() && config.service_mode != "api" && config.service_mode != "realtime")) {
+        if (show_help || (input_path.empty() && config.input_plugins.empty())) {
             print_usage(argv[0]);
             return show_help ? 0 : 1;
         }
         
-        // Require at least one output format (unless using config file with service mode)
-        if (config.service_mode != "api" && config.service_mode != "realtime" && !enable_json && !enable_wav && !enable_text && !enable_csv) {
+        // Require at least one output format (unless using config file with plugins)
+        if (config.input_plugins.empty() && !enable_json && !enable_wav && !enable_text && !enable_csv) {
             std::cerr << "Error: Must specify at least one output format (--json, --wav, --text, or --csv)\n";
             std::cerr << "Use -h for help or -c for config file mode\n";
             return 1;
@@ -654,221 +712,188 @@ int main(int argc, char* argv[]) {
 
         if (!quiet && verbose) {
             std::cout << "trunk-decoder v1.0\n";
-            if (config.service_mode != "api" && config.service_mode != "realtime") {
+            if (!config.input_plugins.empty()) {
+                std::cout << "Service mode: Plugin-based processing" << std::endl;
+            } else if (!input_path.empty()) {
                 std::cout << "Input: " << input_path << "\n";
-            } else if (config.service_mode == "realtime") {
-                std::cout << "Service mode: Real-time P25 TSBK processing" << std::endl;
             }
             std::cout << "Output directory: " << output_dir << "\n";
             std::cout << std::endl;
         }
 
-        // Handle service mode (API mode) - skip file processing
-        if (config.service_mode == "api") {
-            
-            // Use configured port
-            int port = config.api_port;
-            
-            ApiService api_service(port, output_dir, verbose, config.foreground, 
-                                   config.worker_threads, config.queue_size, config.timeout_ms);
-            
-            // Configure authentication
-            if (!config.auth_token.empty()) {
-                api_service.set_auth_token(config.auth_token);
-                if (!quiet) {
-                    std::cout << "API authentication enabled" << std::endl;
-                }
-            }
-            
-            // Configure HTTPS/SSL
-            if (!config.ssl_cert.empty() && !config.ssl_key.empty()) {
-                api_service.enable_https(config.ssl_cert, config.ssl_key);
-                if (!quiet) {
-                    std::cout << "HTTPS/SSL enabled with cert: " << config.ssl_cert << std::endl;
-                }
-            }
-            
-            // Configure upload script
-            if (!config.upload_script.empty()) {
-                api_service.set_upload_script(config.upload_script);
-                if (!quiet) {
-                    std::cout << "Upload script configured: " << config.upload_script << std::endl;
-                }
-            }
-            
-            // Configure audio format
-            api_service.set_audio_format(config.audio_format);
-            api_service.set_audio_bitrate(config.audio_bitrate);
-            if (!quiet && config.audio_format != "wav") {
-                std::cout << "Audio format: " << config.audio_format;
-                if (config.audio_bitrate > 0) {
-                    std::cout << " @ " << config.audio_bitrate << "k";
-                }
-                std::cout << std::endl;
-            }
-            
-            // Configure decryption keys
-            if (!des_keys.empty() || !aes_keys.empty() || !adp_keys.empty()) {
-                api_service.enable_decryption(true);
-                
-                for (const auto& key_pair : des_keys) {
-                    api_service.add_des_key(key_pair.first, key_pair.second);
-                }
-                for (const auto& key_pair : aes_keys) {
-                    api_service.add_aes_key(key_pair.first, key_pair.second);
-                }
-                for (const auto& key_pair : adp_keys) {
-                    api_service.add_adp_key(key_pair.first, key_pair.second);
-                }
-                
-                if (!quiet) {
-                    int total_keys = des_keys.size() + aes_keys.size() + adp_keys.size();
-                    std::cout << "API service configured with " << total_keys << " encryption key(s)" << std::endl;
-                }
-            }
-            
-            if (!quiet) {
-                std::cout << "Starting trunk-decoder API service on port " << port << std::endl;
-                std::cout << "Output directory: " << output_dir << std::endl;
-                if (config.audio_format != "wav") {
-                    std::cout << "Audio codec disclaimer: Codec usage subject to patent/licensing requirements" << std::endl;
-                }
-                std::cout << "Press Ctrl+C to stop the service" << std::endl;
-            }
-            
-            if (!api_service.start()) {
-                std::cerr << "Failed to start API service on port " << port << std::endl;
-                return 1;
-            }
-            
-            return 0;
+        // Always run with plugin system
+        if (!quiet) {
+            std::cout << "Starting trunk-decoder with plugin system" << std::endl;
+            std::cout << "Loading input plugins..." << std::endl;
         }
         
-        // Handle realtime mode - process live P25 TSBK data from input plugins
-        if (config.service_mode == "realtime") {
+        // Initialize input plugin manager
+        std::cout << "[DEBUG] Creating InputPluginManager..." << std::endl;
+        InputPluginManager input_manager(verbose);
+        std::cout << "[DEBUG] InputPluginManager created successfully" << std::endl;
+        
+        // Input plugins are now parsed during config loading
+        
+        // Add default P25 TSBK UDP input plugin if no plugins configured
+        std::cout << "[DEBUG] Checking input plugins config..." << std::endl;
+        if (config.input_plugins.empty()) {
+            json default_config;
+            default_config["listen_address"] = "127.0.0.1";
+            default_config["listen_port"] = 9999;
+            default_config["verbose"] = verbose;
+            default_config["validate_checksums"] = true;
+            default_config["max_queue_size"] = 1000;
+            
+            input_manager.add_plugin("p25_tsbk_udp", "./plugins/libp25_tsbk_udp_input.so", default_config);
+            
             if (!quiet) {
-                std::cout << "Starting trunk-decoder in real-time mode" << std::endl;
-                std::cout << "Loading input plugins..." << std::endl;
+                std::cout << "Using default P25 TSBK UDP input plugin (127.0.0.1:9999)" << std::endl;
             }
-            
-            // Initialize plugin managers
-            auto input_manager = std::make_shared<InputPluginManager>(verbose);
-            auto output_manager = std::make_shared<OutputPluginManager>(verbose);
-            PluginRouter router(input_manager, output_manager, verbose);
-            
-            // Add default P25 TSBK UDP input plugin if no plugins configured
-            if (config.input_plugins.empty()) {
-                json default_config;
-                default_config["listen_address"] = "127.0.0.1";
-                default_config["listen_port"] = 9999;
-                default_config["verbose"] = verbose;
-                default_config["validate_checksums"] = true;
-                default_config["max_queue_size"] = 1000;
-                
-                input_manager->add_plugin("p25_tsbk_udp", "./plugins/libp25_tsbk_udp_input.so", default_config);
-                
+        } else {
+            // Load configured input plugins
+            for (const auto& plugin_config : config.input_plugins) {
+                input_manager.add_plugin(plugin_config.name, plugin_config.library, plugin_config.config_data);
                 if (!quiet) {
-                    std::cout << "Using default P25 TSBK UDP input plugin (127.0.0.1:9999)" << std::endl;
-                }
-            } else {
-                // Load configured input plugins
-                for (const auto& plugin_config : config.input_plugins) {
-                    input_manager->add_plugin(plugin_config.name, plugin_config.library, plugin_config.config_data);
-                    if (!quiet) {
-                        std::cout << "Added input plugin: " << plugin_config.name << std::endl;
-                    }
+                    std::cout << "Added input plugin: " << plugin_config.name << std::endl;
                 }
             }
-            
-            // Add default console output plugin if no output plugins configured
-            if (config.output_plugins.empty()) {
-                json console_config;
-                console_config["verbose"] = verbose;
-                console_config["show_hex_dump"] = false;
-                console_config["max_hex_bytes"] = 32;
-                
-                output_manager->add_plugin("console", "./plugins/libconsole_output.so", console_config);
-                
-                if (!quiet) {
-                    std::cout << "Using default console output plugin" << std::endl;
-                }
-            } else {
-                // Load configured output plugins
-                for (const auto& plugin_config : config.output_plugins) {
-                    output_manager->add_plugin(plugin_config.name, plugin_config.library, plugin_config.config_data);
+        }
+        
+        // Initialize output plugin manager
+        if (!quiet) {
+            std::cout << "Loading output plugins..." << std::endl;
+        }
+        
+        OutputPluginManager output_manager(verbose);
+        
+        // Load configured output plugins
+        if (!config.output_plugins.empty()) {
+            for (const auto& plugin_config : config.output_plugins) {
+                if (plugin_config.enabled) {
+                    output_manager.add_plugin(plugin_config.name, plugin_config.library, plugin_config.config_data);
                     if (!quiet) {
                         std::cout << "Added output plugin: " << plugin_config.name << std::endl;
                     }
                 }
             }
-            
-            // Set up routing rules
-            if (config.routing_rules.empty()) {
-                // Default: route all inputs to all outputs
-                router.add_route("*", output_manager->get_active_plugin_names());
-            } else {
-                // TODO: Implement config-based routing rules loading
-                // For now, use default routing
-                router.add_route("*", output_manager->get_active_plugin_names());
-            }
-            
-            // Set up data callback for routing P25 TSBK data
-            input_manager->set_data_callback([&router](P25_TSBK_Data data) {
-                // Route data through the plugin system
-                router.route_data(data, data.source_name);
-            });
-            
-            // Initialize and start plugins
-            if (input_manager->initialize_all() != 0) {
-                std::cerr << "Failed to initialize input plugins" << std::endl;
-                return 1;
-            }
-            
-            if (output_manager->initialize_all() != 0) {
-                std::cerr << "Failed to initialize output plugins" << std::endl;
-                return 1;
-            }
-            
-            if (input_manager->start_all() != 0) {
-                std::cerr << "Failed to start input plugins" << std::endl;
-                return 1;
-            }
-            
-            if (output_manager->start_all() != 0) {
-                std::cerr << "Failed to start output plugins" << std::endl;
-                return 1;
-            }
-            
-            if (!quiet) {
-                std::cout << "Real-time P25 TSBK processing started" << std::endl;
-                std::cout << "Press Ctrl+C to stop" << std::endl;
-            }
-            
-            // Run until interrupted
-            try {
-                while (true) {
-                    std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+        
+        // Create shared pointers for plugin managers
+        auto input_manager_ptr = std::make_shared<InputPluginManager>(input_manager);
+        auto output_manager_ptr = std::make_shared<OutputPluginManager>(output_manager);
+        
+        // Load call processing plugins directly (simplified approach)
+        boost::shared_ptr<Plugin_Api> file_output_plugin = nullptr;
+        boost::dll::shared_library file_output_lib; // Keep library alive
+        
+        if (!config.plugins.empty()) {
+            for (const auto& plugin_config : config.plugins) {
+                if (plugin_config.enabled && plugin_config.name == "file_output") {
+                    if (!quiet) {
+                        std::cout << "Loading call processing plugin: " << plugin_config.name << std::endl;
+                    }
                     
-                    // Print stats periodically
-                    static int stats_counter = 0;
-                    if (verbose && ++stats_counter % 60 == 0) {
-                        json stats = input_manager->get_all_stats();
-                        std::cout << "Input plugin stats: " << stats.dump(2) << std::endl;
+                    try {
+                        // Load the plugin library and keep it alive
+                        file_output_lib.load(plugin_config.library);
+                        auto creator = file_output_lib.get<boost::shared_ptr<Plugin_Api>()>("_create_plugin");
+                        file_output_plugin = creator();
+                        
+                        // Initialize and start the plugin
+                        if (file_output_plugin->init(plugin_config.config_data) == 0) {
+                            if (file_output_plugin->start() == 0) {
+                                if (!quiet) {
+                                    std::cout << "Successfully loaded plugin: " << plugin_config.name << std::endl;
+                                }
+                            } else {
+                                std::cerr << "Failed to start plugin: " << plugin_config.name << std::endl;
+                                file_output_plugin = nullptr;
+                            }
+                        } else {
+                            std::cerr << "Failed to initialize plugin: " << plugin_config.name << std::endl;
+                            file_output_plugin = nullptr;
+                        }
+                    } catch (const std::exception& e) {
+                        std::cerr << "Failed to load plugin " << plugin_config.name << ": " << e.what() << std::endl;
+                        file_output_plugin = nullptr;
                     }
                 }
-            } catch (const std::exception& e) {
-                std::cerr << "Error in realtime mode: " << e.what() << std::endl;
             }
-            
-            input_manager->stop_all();
-            output_manager->stop_all();
-            
-            if (!quiet) {
-                std::cout << "Real-time processing stopped" << std::endl;
-            }
-            
-            return 0;
         }
+        
+        // Initialize plugin router
+        PluginRouter plugin_router(input_manager_ptr, output_manager_ptr, verbose);
+        
+        // Add default routing rule (route all inputs to file_output)
+        plugin_router.add_route("*", {"file_output"});
+        if (!quiet) {
+            std::cout << "Added routing rule: * -> file_output" << std::endl;
+        }
+        
+        // Set up plugin router data callback
+        input_manager.set_data_callback([&plugin_router, verbose](P25_TSBK_Data data) {
+            // Route data through plugin system (correct parameter order: data, source)
+            plugin_router.route_data(data, data.source_name);
+            
+            // Basic packet counter for progress indication - only show every 1000 packets
+            static int packet_count = 0;
+            packet_count++;
+            if (packet_count % 1000 == 0 && verbose) {
+                std::cout << "Routed " << packet_count << " packets through plugin system..." << std::endl;
+            }
+        });
+        
+        // Initialize and start input plugins
+        if (input_manager.initialize_all() != 0) {
+            std::cerr << "Failed to initialize input plugins" << std::endl;
+            return 1;
+        }
+        
+        if (input_manager.start_all() != 0) {
+            std::cerr << "Failed to start input plugins" << std::endl;
+            return 1;
+        }
+        
+        // Initialize and start output plugins
+        if (output_manager.initialize_all() != 0) {
+            std::cerr << "Failed to initialize output plugins" << std::endl;
+            return 1;
+        }
+        
+        if (output_manager.start_all() != 0) {
+            std::cerr << "Failed to start output plugins" << std::endl;
+            return 1;
+        }
+        
+        if (!quiet) {
+            std::cout << "Plugin-based processing started" << std::endl;
+            std::cout << "Press Ctrl+C to stop" << std::endl;
+        }
+        
+        // Run until interrupted
+        try {
+            while (true) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                
+                // Print stats periodically
+                static int stats_counter = 0;
+                if (verbose && ++stats_counter % 60 == 0) {
+                    json stats = input_manager.get_all_stats();
+                    std::cout << "Input plugin stats: " << stats.dump(2) << std::endl;
+                }
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Error in plugin processing: " << e.what() << std::endl;
+        }
+        
+        input_manager.stop_all();
+        output_manager.stop_all();
+        
+        if (!quiet) {
+            std::cout << "Plugin processing stopped" << std::endl;
+        }
+        
+        return 0;
 
         std::vector<std::string> files_to_process;
         

@@ -1,9 +1,19 @@
 {
-  "service_mode": "realtime",
   "verbose": true,
   "quiet": false,
   "foreground": true,
   "input_plugins": [
+    {
+      "name": "api_input",
+      "library": "./plugins/libapi_input.so",
+      "enabled": true,
+      "config": {
+        "listen_address": "0.0.0.0",
+        "listen_port": 3000,
+        "max_queue_size": 1000,
+        "verbose": true
+      }
+    },
     {
       "name": "p25_tsbk_udp",
       "library": "./plugins/libp25_tsbk_udp_input.so",

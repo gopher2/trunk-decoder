@@ -25,22 +25,29 @@
   - Verified plugin loading and initialization
   - Real-time data reception operational
 
+- [x] **Implement API input plugin for HTTP-based P25 file uploads**
+  - HTTP server with REST API endpoints for trunk-recorder compatibility
+  - File upload handling for .p25 audio files 
+  - Request routing for /api/v1/decode and /api/call-upload endpoints
+  - JSON response handling and error management
+
 ## Plugin Routing and Management
-- [ ] **Design flexible plugin routing/wiring system for input-to-output connections**
+- [x] **Design flexible plugin routing/wiring system for input-to-output connections**
   - Support configurable 1:1, 1:many, many:1, many:many routing
   - Plugin chain configuration and validation
   - Data flow control and backpressure handling
 
-- [ ] **Implement plugin manager with configurable routing (1:1, 1:many, many:1, many:many)**
+- [x] **Implement plugin manager with configurable routing (1:1, 1:many, many:1, many:many)**
   - Enhanced plugin manager with routing capabilities
-  - Dynamic reconfiguration support
+  - Plugin router implementation with wildcard matching
   - Plugin dependency resolution and ordering
   - Plugin health monitoring and restart capabilities
 
-- [ ] **Refactor trunk-decoder to use plugins for all input/output operations**
-  - Convert existing file processing to plugin architecture
+- [x] **Refactor trunk-decoder to use plugins for all input/output operations**
+  - Convert main.cc to use plugin-based architecture
   - Migrate all I/O operations through plugin system
-  - Remove hardcoded input/output logic
+  - Remove hardcoded service_mode logic
+  - Unified configuration parsing with nlohmann::json
 
 ## Input Plugins
 - [ ] **Create file input plugin for existing P25 file processing**
@@ -107,9 +114,10 @@
 - [x] **Implement P25 TSBK packet receiver** - UDP listener for P25C packets from trunk-recorder  
 - [x] **Test end-to-end streaming pipeline** - Verify trunk-recorder → trunk-decoder integration
 
-## Phase 2 Implementation Priority (CURRENT)
-- [ ] **Design flexible plugin routing/wiring system** - Configurable 1:1, 1:many, many:1, many:many connections
-- [ ] **Implement enhanced plugin manager** - Support all input/output operations via plugins
+## Phase 2 Implementation Priority (CURRENT)  
+- [x] **Design flexible plugin routing/wiring system** - Configurable 1:1, 1:many, many:1, many:many connections
+- [x] **Implement enhanced plugin manager** - Support all input/output operations via plugins
+- [ ] **Fix file_output plugin loading and symbol resolution** - Resolve dlsym issues and complete API file processing pipeline
 - [ ] **Create file input plugin** - Backward compatibility with existing P25 file processing
 - [ ] **Implement trunk-player API output plugin** - Real-time web interface integration
 
