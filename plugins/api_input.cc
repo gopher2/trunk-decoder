@@ -264,8 +264,9 @@ private:
     void handle_request(int client_fd) {
         requests_received_++;
         
-        char buffer[8192];
-        ssize_t bytes_read = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+        // Use larger buffer for multipart file uploads
+        std::vector<char> buffer(65536); // 64KB buffer
+        ssize_t bytes_read = recv(client_fd, buffer.data(), buffer.size() - 1, 0);
         
         if (bytes_read <= 0) {
             requests_rejected_++;
@@ -273,7 +274,7 @@ private:
         }
         
         buffer[bytes_read] = '\0';
-        std::string request(buffer);
+        std::string request(buffer.data(), bytes_read);
         
         if (verbose_) {
             std::cout << "[API_Input] Received HTTP request: " << bytes_read << " bytes" << std::endl;
@@ -397,12 +398,18 @@ private:
         }
         
         size_t boundary_start = boundary_pos + 9; // length of "boundary="
-        size_t boundary_end = request.find('\r', boundary_start);
+        size_t boundary_end = request.find_first_of("\r\n; ", boundary_start);
         if (boundary_end == std::string::npos) {
-            boundary_end = request.find('\n', boundary_start);
+            boundary_end = request.length();
         }
         
-        std::string boundary = "--" + request.substr(boundary_start, boundary_end - boundary_start);
+        std::string raw_boundary = request.substr(boundary_start, boundary_end - boundary_start);
+        // Remove any trailing whitespace or quotes
+        while (!raw_boundary.empty() && (raw_boundary.back() == ' ' || raw_boundary.back() == '\t' || raw_boundary.back() == '"')) {
+            raw_boundary.pop_back();
+        }
+        
+        std::string boundary = "--" + raw_boundary;
         
         if (verbose_) {
             std::cout << "[API_Input] Extracted boundary: '" << boundary << "'" << std::endl;
@@ -440,10 +447,23 @@ private:
         // Find the end of the file data (next boundary)
         size_t data_end = request.find(boundary, data_start);
         if (data_end == std::string::npos) {
-            if (verbose_) {
-                std::cout << "[API_Input] No end boundary found" << std::endl;
+            // Try looking for the closing boundary (with --)
+            std::string close_boundary = boundary + "--";
+            data_end = request.find(close_boundary, data_start);
+            if (data_end == std::string::npos) {
+                if (verbose_) {
+                    std::cout << "[API_Input] No end boundary found. Request size: " << request.size() 
+                              << ", data_start: " << data_start << std::endl;
+                    std::cout << "[API_Input] Looking for boundary: '" << boundary << "'" << std::endl;
+                    // Show a portion of the data after data_start for debugging
+                    if (request.size() > data_start + 100) {
+                        std::cout << "[API_Input] Data snippet: '" << request.substr(data_start, 100) << "...'" << std::endl;
+                    } else if (request.size() > data_start) {
+                        std::cout << "[API_Input] Remaining data: '" << request.substr(data_start) << "'" << std::endl;
+                    }
+                }
+                return false;
             }
-            return false;
         }
         
         // Adjust for the \r\n before the boundary
