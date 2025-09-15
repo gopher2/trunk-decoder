@@ -1,0 +1,111 @@
+{
+  "service_mode": "realtime",
+  "verbose": true,
+  "quiet": false,
+  "foreground": true,
+  
+  "input_plugins": [
+    {
+      "name": "api_input",
+      "library": "./plugins/libapi_input.so",
+      "enabled": true,
+      "config": {
+        "listen_address": "0.0.0.0",
+        "listen_port": 3000,
+        "max_queue_size": 1000,
+        "verbose": true
+      }
+    },
+    {
+      "name": "p25_tsbk_udp",
+      "library": "./plugins/libp25_tsbk_udp_input.so",
+      "enabled": true,
+      "config": {
+        "listen_address": "127.0.0.1",
+        "listen_port": 9999,
+        "buffer_size": 8192,
+        "max_queue_size": 1000,
+        "validate_checksums": true,
+        "verbose": false
+      }
+    }
+  ],
+  
+  "output_plugins": [
+    {
+      "name": "console",
+      "library": "./plugins/libconsole_output.so",
+      "enabled": false,
+      "config": {
+        "verbose": false,
+        "show_hex_dump": false,
+        "max_hex_bytes": 32
+      }
+    },
+    {
+      "name": "trunk_player_local",
+      "library": "./plugins/libtrunk_player_local.so",
+      "enabled": false,
+      "config": {
+        "trunk_player_path": "/Users/dave/Documents/GitHub/trunk-player",
+        "system_id": 0,
+        "source_id": 0,
+        "keep_files": false,
+        "verbose": true
+      }
+    }
+  ],
+  
+  "plugins": [
+    {
+      "name": "file_output",
+      "library": "./plugins/libfile_output.so",
+      "enabled": true,
+      "config": {
+        "output_base_dir": "/Users/dave/Dump",
+        "folder_structure": "{system}/{year}/{month}/{day}/{talkgroup}",
+        "copy_wav": true,
+        "copy_mp3": true,
+        "copy_m4a": true,
+        "copy_p25": true,
+        "p25_output_mode": "voice",
+        "copy_json": true,
+        "create_symlinks": false,
+        "verbose": true,
+        "audio_processing": {
+          "default_bitrate": 96,
+          "formats": {
+            "wav": { "enabled": true, "bitrate": 0 },
+            "mp3": { "enabled": true, "bitrate": 128 },
+            "m4a": { "enabled": true, "bitrate": 96 },
+            "opus": { "enabled": false, "bitrate": 32 }
+          }
+        }
+      }
+    }
+  ],
+  
+  "routing_rules": [
+    {
+      "input": "*",
+      "outputs": ["file_output"],
+      "enabled": true
+    }
+  ],
+  
+  "api_service": {
+    "port": 3000,
+    "auth_token": "your-secure-api-token-here",
+    "ssl_cert": "",
+    "ssl_key": "",
+    "output_dir": "/Users/dave/Documents/GitHub/trunk-player/audio"
+  },
+  
+  "worker_pool": {
+    "worker_threads": 4,
+    "queue_size": 1000,
+    "timeout_ms": 30000
+  },
+  
+  "decryption_keys": []
+}
