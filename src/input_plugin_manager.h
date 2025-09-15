@@ -12,9 +12,7 @@
 #include <memory>
 #include <string>
 #include <functional>
-#include <boost/dll/import.hpp>
-
-namespace dll = boost::dll;
+#include <dlfcn.h>
 
 class InputPluginManager {
 private:
@@ -24,9 +22,10 @@ private:
         std::shared_ptr<Input_Plugin_Api> plugin;
         json config;
         bool enabled;
+        void* dl_handle;  // dlopen handle
         
         InputPluginInfo(const std::string& n, const std::string& path) 
-            : name(n), library_path(path), enabled(true) {}
+            : name(n), library_path(path), enabled(true), dl_handle(nullptr) {}
     };
     
     std::vector<InputPluginInfo> plugins_;
@@ -94,6 +93,10 @@ public:
                     std::cout << "[InputPluginManager] Stopped plugin: " << plugin_info.name << std::endl;
                 }
             }
+            if (plugin_info.dl_handle) {
+                dlclose(plugin_info.dl_handle);
+                plugin_info.dl_handle = nullptr;
+            }
         }
         return 0;
     }
@@ -158,22 +161,33 @@ public:
     
 private:
     int load_plugin(InputPluginInfo& plugin_info) {
+        if (verbose_) {
+            std::cout << "[InputPluginManager] Loading plugin: " << plugin_info.name 
+                      << " from " << plugin_info.library_path << std::endl;
+        }
+        
+        // Load the plugin library with dlopen
+        plugin_info.dl_handle = dlopen(plugin_info.library_path.c_str(), RTLD_LAZY);
+        if (!plugin_info.dl_handle) {
+            std::cerr << "[InputPluginManager] Cannot load library: " << dlerror() << std::endl;
+            return -1;
+        }
+        
+        // Get the factory function
+        typedef std::shared_ptr<Input_Plugin_Api> (*create_func_t)();
+        create_func_t create_func = (create_func_t) dlsym(plugin_info.dl_handle, "create_input_plugin");
+        
+        const char* dlsym_error = dlerror();
+        if (dlsym_error) {
+            std::cerr << "[InputPluginManager] Cannot load symbol 'create_input_plugin': " << dlsym_error << std::endl;
+            dlclose(plugin_info.dl_handle);
+            plugin_info.dl_handle = nullptr;
+            return -1;
+        }
+        
+        // Create plugin instance
         try {
-            if (verbose_) {
-                std::cout << "[InputPluginManager] Loading plugin: " << plugin_info.name 
-                          << " from " << plugin_info.library_path << std::endl;
-            }
-            
-            // Load the plugin library
-            std::function<std::shared_ptr<Input_Plugin_Api>()> creator;
-            creator = dll::import_alias<std::shared_ptr<Input_Plugin_Api>()>(
-                plugin_info.library_path,
-                "create_input_plugin",
-                dll::load_mode::append_decorations
-            );
-            
-            // Create plugin instance
-            plugin_info.plugin = creator();
+            plugin_info.plugin = create_func();
             
             if (verbose_) {
                 std::cout << "[InputPluginManager] Created plugin: " 
@@ -185,6 +199,8 @@ private:
             if (plugin_info.plugin->init(plugin_info.config) != 0) {
                 std::cerr << "[InputPluginManager] Failed to initialize plugin: " << plugin_info.name << std::endl;
                 plugin_info.plugin.reset();
+                dlclose(plugin_info.dl_handle);
+                plugin_info.dl_handle = nullptr;
                 return -1;
             }
             
@@ -196,8 +212,10 @@ private:
             return 0;
             
         } catch (const std::exception& e) {
-            std::cerr << "[InputPluginManager] Error loading plugin " << plugin_info.name 
+            std::cerr << "[InputPluginManager] Error creating plugin " << plugin_info.name 
                       << ": " << e.what() << std::endl;
+            dlclose(plugin_info.dl_handle);
+            plugin_info.dl_handle = nullptr;
             return -1;
         }
     }

@@ -92,7 +92,7 @@ struct P25_TSBK_Data {
     uint32_t version;            // Protocol version
     uint64_t timestamp_us;       // Microsecond timestamp
     uint32_t sequence_number;    // For ordering/loss detection
-    uint32_t nac;                // Network Access Code (System ID)
+    uint32_t system_id;          // System identifier (NAC)
     uint32_t site_id;            // Site identifier
     double frequency;            // Control channel frequency
     uint32_t sample_rate;        // Sample rate of data

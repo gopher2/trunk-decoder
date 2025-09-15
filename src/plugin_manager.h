@@ -12,6 +12,7 @@
 #include <string>
 #include <boost/dll/shared_library.hpp>
 #include <boost/dll/import.hpp>
+#include <boost/function.hpp>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;

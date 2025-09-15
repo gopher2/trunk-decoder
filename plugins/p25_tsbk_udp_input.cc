@@ -320,7 +320,7 @@ private:
         memcpy(&tsbk_data.sequence_number, data + offset, sizeof(uint32_t));
         offset += sizeof(uint32_t);
         
-        memcpy(&tsbk_data.nac, data + offset, sizeof(uint32_t));
+        memcpy(&tsbk_data.system_id, data + offset, sizeof(uint32_t));
         offset += sizeof(uint32_t);
         
         memcpy(&tsbk_data.site_id, data + offset, sizeof(uint32_t));
@@ -328,6 +328,21 @@ private:
         
         memcpy(&tsbk_data.frequency, data + offset, sizeof(double));
         offset += sizeof(double);
+        
+        // DEBUG: Print raw bytes and parsed values (disabled to reduce output noise)
+        // static int debug_count = 0;
+        // if (debug_count < 3) { // Only show first 3 packets to avoid spam
+        //     std::cout << "[DEBUG] Packet length: " << length << " bytes" << std::endl;
+        //     std::cout << "[DEBUG] Magic: 0x" << std::hex << tsbk_data.magic << std::dec << std::endl;
+        //     std::cout << "[DEBUG] System ID: 0x" << std::hex << tsbk_data.system_id << std::dec << std::endl;
+        //     std::cout << "[DEBUG] Frequency: " << tsbk_data.frequency << " Hz" << std::endl;
+        //     std::cout << "[DEBUG] Raw frequency bytes: ";
+        //     for (int i = 0; i < 8; i++) {
+        //         std::cout << "0x" << std::hex << (int)data[offset - 8 + i] << " ";
+        //     }
+        //     std::cout << std::dec << std::endl;
+        //     debug_count++;
+        // }
         
         memcpy(&tsbk_data.sample_rate, data + offset, sizeof(uint32_t));
         offset += sizeof(uint32_t);
