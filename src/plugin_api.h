@@ -216,6 +216,7 @@ public:
     virtual bool has_data() = 0;  // Check if data is available
     virtual P25_TSBK_Data get_data() = 0;  // Get next TSBK data packet
     virtual void set_data_callback(std::function<void(P25_TSBK_Data)> callback) = 0;  // Set callback for async data
+    virtual void set_call_callback(std::function<void(Call_Data_t)> callback) = 0;  // Set callback for call data
     
 protected:
     Plugin_State state_ = Plugin_State::PLUGIN_UNINITIALIZED;
@@ -241,9 +242,18 @@ public:
         return stats;
     }
     
+    virtual void set_data_callback(std::function<void(P25_TSBK_Data)> callback) override {
+        data_callback_ = callback;
+    }
+    
+    virtual void set_call_callback(std::function<void(Call_Data_t)> callback) override {
+        call_callback_ = callback;
+    }
+    
 protected:
     void set_state(Plugin_State state) { state_ = state; }
     std::function<void(P25_TSBK_Data)> data_callback_;
+    std::function<void(Call_Data_t)> call_callback_;
 };
 
 // Output Plugin API Interface

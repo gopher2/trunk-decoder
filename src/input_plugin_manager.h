@@ -30,6 +30,7 @@ private:
     
     std::vector<InputPluginInfo> plugins_;
     std::function<void(P25_TSBK_Data)> data_callback_;
+    std::function<void(Call_Data_t)> call_callback_;
     bool verbose_;
     
 public:
@@ -108,6 +109,16 @@ public:
         for (auto& plugin_info : plugins_) {
             if (plugin_info.plugin) {
                 plugin_info.plugin->set_data_callback(callback);
+            }
+        }
+    }
+    
+    void set_call_callback(std::function<void(Call_Data_t)> callback) {
+        call_callback_ = callback;
+        
+        for (auto& plugin_info : plugins_) {
+            if (plugin_info.plugin) {
+                plugin_info.plugin->set_call_callback(callback);
             }
         }
     }

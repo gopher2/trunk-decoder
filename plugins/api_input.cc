@@ -338,15 +338,22 @@ private:
         
         if (verbose_) {
             std::cout << "[API_Input] Processing decode request from trunk-recorder" << std::endl;
+            
+            // Debug: Show first 1000 chars of request to understand structure
+            size_t debug_len = std::min(request.size(), size_t(1000));
+            std::cout << "[API_Input] Request structure (first " << debug_len << " chars):" << std::endl;
+            std::cout << request.substr(0, debug_len) << std::endl;
+            std::cout << "[API_Input] --- End request debug ---" << std::endl;
         }
         
         // Parse multipart form data to extract .p25 files
         std::vector<uint8_t> p25_data;
         std::string filename;
+        std::string json_data;
         
-        if (parse_multipart_data(request, p25_data, filename)) {
+        if (parse_multipart_data(request, p25_data, filename, json_data)) {
             // Process the .p25 file
-            process_p25_file(p25_data, filename);
+            process_p25_file(p25_data, filename, json_data);
         }
         
         json response;
@@ -387,7 +394,7 @@ private:
         send(client_fd, response_str.c_str(), response_str.length(), 0);
     }
     
-    bool parse_multipart_data(const std::string& request, std::vector<uint8_t>& p25_data, std::string& filename) {
+    bool parse_multipart_data(const std::string& request, std::vector<uint8_t>& p25_data, std::string& filename, std::string& json_data) {
         // Find the boundary
         size_t boundary_pos = request.find("boundary=");
         if (boundary_pos == std::string::npos) {
@@ -413,6 +420,83 @@ private:
         
         if (verbose_) {
             std::cout << "[API_Input] Extracted boundary: '" << boundary << "'" << std::endl;
+            
+            // Debug: show all form field names and data sizes
+            std::cout << "[API_Input] Form fields found:" << std::endl;
+            size_t name_pos = 0;
+            while ((name_pos = request.find("name=\"", name_pos)) != std::string::npos) {
+                name_pos += 6; // length of "name=\""
+                size_t name_end = request.find('"', name_pos);
+                if (name_end != std::string::npos) {
+                    std::string field_name = request.substr(name_pos, name_end - name_pos);
+                    
+                    // Find the data for this field
+                    size_t field_data_start = request.find("\r\n\r\n", name_pos);
+                    if (field_data_start != std::string::npos) {
+                        field_data_start += 4; // Skip \r\n\r\n
+                        size_t field_data_end = request.find(boundary, field_data_start);
+                        if (field_data_end == std::string::npos) {
+                            field_data_end = request.find(boundary + "--", field_data_start);
+                        }
+                        if (field_data_end != std::string::npos) {
+                            size_t data_size = field_data_end - field_data_start;
+                            if (data_size >= 2 && request.substr(field_data_end - 2, 2) == "\r\n") {
+                                data_size -= 2;
+                            }
+                            std::cout << "[API_Input]   - " << field_name << " (" << data_size << " bytes)" << std::endl;
+                            
+                            // If it's JSON-like field, show a preview
+                            if (field_name == "metadata" || field_name == "json" || field_name == "call_data") {
+                                std::string preview = request.substr(field_data_start, std::min(data_size, size_t(200)));
+                                std::cout << "[API_Input]     Preview: " << preview << std::endl;
+                            }
+                            
+                            // Continue searching after this field's data
+                            name_pos = field_data_end;
+                        } else {
+                            std::cout << "[API_Input]   - " << field_name << " (unknown size)" << std::endl;
+                            name_pos = name_end + 1;
+                        }
+                    } else {
+                        std::cout << "[API_Input]   - " << field_name << " (no data found)" << std::endl;
+                        name_pos = name_end + 1;
+                    }
+                } else {
+                    break; // No more field names found
+                }
+            }
+        }
+        
+        // First, look for JSON metadata field (trunk-recorder sends this as "metadata")
+        size_t json_field_start = request.find("name=\"metadata\"");
+        if (json_field_start == std::string::npos) {
+            json_field_start = request.find("name=\"json\"");
+        }
+        if (json_field_start == std::string::npos) {
+            json_field_start = request.find("name=\"call_data\"");
+        }
+        
+        if (json_field_start != std::string::npos) {
+            // Find the start of the JSON data (after headers)
+            size_t json_data_start = request.find("\r\n\r\n", json_field_start);
+            if (json_data_start != std::string::npos) {
+                json_data_start += 4; // Skip the \r\n\r\n
+                
+                // Find the end of the JSON data (next boundary)
+                size_t json_data_end = request.find(boundary, json_data_start);
+                if (json_data_end != std::string::npos) {
+                    // Adjust for \r\n before boundary
+                    if (json_data_end >= 2 && request.substr(json_data_end - 2, 2) == "\r\n") {
+                        json_data_end -= 2;
+                    }
+                    
+                    json_data = request.substr(json_data_start, json_data_end - json_data_start);
+                    
+                    if (verbose_) {
+                        std::cout << "[API_Input] Extracted JSON data: " << json_data.length() << " chars" << std::endl;
+                    }
+                }
+            }
         }
         
         // Find the file data
@@ -483,7 +567,7 @@ private:
         return true;
     }
     
-    void process_p25_file(const std::vector<uint8_t>& p25_data, const std::string& filename) {
+    void process_p25_file(const std::vector<uint8_t>& p25_data, const std::string& filename, const std::string& json_data) {
         if (verbose_) {
             std::cout << "[API_Input] Processing P25 file: " << filename << " (" << p25_data.size() << " bytes)" << std::endl;
         }
@@ -518,61 +602,194 @@ private:
            << std::setfill('0') << std::setw(3) << ms.count();
         std::string timestamp = ss.str();
         
-        // Save the P25 file
-        std::string p25_filepath = "/Users/dave/Dump/" + timestamp + ".p25";
+        // Create temporary file paths for the plugin router to process
+        std::string temp_dir = "/tmp/trunk-decoder-" + std::to_string(getpid());
+        std::filesystem::create_directories(temp_dir);
+        
+        std::string p25_filepath = temp_dir + "/" + timestamp + ".p25";
+        std::string wav_path = temp_dir + "/" + timestamp + ".wav";
+        std::string json_path = temp_dir + "/" + timestamp + ".json";
+        
+        // Save temporary P25 file
         std::ofstream p25_file(p25_filepath, std::ios::binary);
         if (p25_file.is_open()) {
             p25_file.write(reinterpret_cast<const char*>(p25_data.data()), p25_data.size());
             p25_file.close();
             
             if (verbose_) {
-                std::cout << "[API_Input] Saved P25 file to: " << p25_filepath << std::endl;
+                std::cout << "[API_Input] Created temporary P25 file: " << p25_filepath << std::endl;
             }
         }
         
-        // Create WAV filename (for compatibility)
-        std::string wav_path = "/Users/dave/Dump/" + timestamp + ".wav";
-        std::string json_path = "/Users/dave/Dump/" + timestamp + ".json";
-        strncpy(call_data.wav_filename, wav_path.c_str(), sizeof(call_data.wav_filename) - 1);
-        strncpy(call_data.json_filename, json_path.c_str(), sizeof(call_data.json_filename) - 1);
-        call_data.wav_filename[sizeof(call_data.wav_filename) - 1] = '\0';
-        call_data.json_filename[sizeof(call_data.json_filename) - 1] = '\0';
-        
-        // Create a simple WAV file or copy the P25 data as WAV for now
-        std::ofstream wav_file(call_data.wav_filename, std::ios::binary);
+        // Copy P25 data as WAV for compatibility (will be processed by output plugins)
+        std::ofstream wav_file(wav_path, std::ios::binary);
         if (wav_file.is_open()) {
             wav_file.write(reinterpret_cast<const char*>(p25_data.data()), p25_data.size());
             wav_file.close();
         }
         
-        // Create JSON metadata
-        json metadata;
-        metadata["filename"] = filename;
-        metadata["talkgroup"] = call_data.talkgroup;
-        metadata["timestamp"] = timestamp;
-        metadata["size"] = p25_data.size();
-        metadata["format"] = "p25";
+        // Set filenames for the plugin router
+        strncpy(call_data.wav_filename, wav_path.c_str(), sizeof(call_data.wav_filename) - 1);
+        strncpy(call_data.json_filename, json_path.c_str(), sizeof(call_data.json_filename) - 1);
+        call_data.wav_filename[sizeof(call_data.wav_filename) - 1] = '\0';
+        call_data.json_filename[sizeof(call_data.json_filename) - 1] = '\0';
         
-        std::ofstream json_file(call_data.json_filename);
+        // Use original JSON data if available, otherwise create basic metadata
+        json metadata;
+        if (!json_data.empty()) {
+            try {
+                metadata = json::parse(json_data);
+                if (verbose_) {
+                    std::cout << "[API_Input] Using original JSON metadata from trunk-recorder" << std::endl;
+                }
+            } catch (const std::exception& e) {
+                if (verbose_) {
+                    std::cout << "[API_Input] Failed to parse JSON data, creating basic metadata: " << e.what() << std::endl;
+                }
+                // Fallback to basic metadata
+                metadata["filename"] = filename;
+                metadata["talkgroup"] = call_data.talkgroup;
+                metadata["timestamp"] = timestamp;
+                metadata["size"] = p25_data.size();
+                metadata["format"] = "p25";
+            }
+        } else {
+            if (verbose_) {
+                std::cout << "[API_Input] No JSON data received, parsing metadata from filename" << std::endl;
+            }
+            // Parse rich metadata from trunk-recorder filename format
+            // Expected format: talkgroup-timestamp_frequency-call_number.p25
+            // Example: 8040-1757933398_853687500.0-call_832.p25
+            // Parse rich metadata from trunk-recorder filename format
+            // Expected format: talkgroup-timestamp_frequency-call_number.p25
+            // Example: 8040-1757933398_853687500.0-call_832.p25
+            
+            // Basic fallback values
+            metadata["filename"] = filename;
+            metadata["format"] = "p25";
+            metadata["size"] = static_cast<int>(p25_data.size());
+            metadata["timestamp"] = timestamp;
+            
+            // Parse trunk-recorder filename format
+            // Remove .p25 extension first
+            std::string basename = filename;
+            if (basename.size() > 4 && basename.substr(basename.size() - 4) == ".p25") {
+                basename = basename.substr(0, basename.size() - 4);
+            }
+            
+            // Split by dashes: talkgroup-timestamp_frequency-call_number
+            size_t first_dash = basename.find('-');
+            if (first_dash != std::string::npos) {
+                // Extract talkgroup
+                std::string talkgroup_str = basename.substr(0, first_dash);
+                try {
+                    long tg = std::stol(talkgroup_str);
+                    metadata["talkgroup"] = tg;
+                    call_data.talkgroup = tg;  // Update call_data too
+                } catch (...) {
+                    metadata["talkgroup"] = call_data.talkgroup;
+                }
+                
+                // Find the last dash (before call_number)
+                size_t last_dash = basename.rfind('-');
+                if (last_dash != std::string::npos && last_dash != first_dash) {
+                    // Extract call number (after last dash)
+                    std::string call_part = basename.substr(last_dash + 1);
+                    if (call_part.substr(0, 5) == "call_") {
+                        try {
+                            metadata["call_num"] = std::stol(call_part.substr(5));
+                        } catch (...) {
+                            metadata["call_num"] = call_data.call_num;
+                        }
+                    } else {
+                        metadata["call_num"] = call_data.call_num;
+                    }
+                    
+                    // Extract timestamp_frequency part (between first and last dash)
+                    std::string time_freq_part = basename.substr(first_dash + 1, last_dash - first_dash - 1);
+                    
+                    // Split by underscore: timestamp_frequency
+                    size_t underscore_pos = time_freq_part.find('_');
+                    if (underscore_pos != std::string::npos) {
+                        // Extract timestamp
+                        std::string timestamp_part = time_freq_part.substr(0, underscore_pos);
+                        try {
+                            long start_time = std::stol(timestamp_part);
+                            metadata["start_time"] = start_time;
+                            call_data.start_time = start_time;
+                        } catch (...) {
+                            metadata["start_time"] = call_data.start_time;
+                        }
+                        
+                        // Extract frequency
+                        std::string freq_part = time_freq_part.substr(underscore_pos + 1);
+                        try {
+                            double freq = std::stod(freq_part);
+                            metadata["freq"] = freq;
+                            call_data.freq = freq;
+                        } catch (...) {
+                            metadata["freq"] = call_data.freq;
+                        }
+                    } else {
+                        metadata["start_time"] = call_data.start_time;
+                        metadata["freq"] = call_data.freq;
+                    }
+                } else {
+                    // Only one dash found, set defaults
+                    metadata["call_num"] = call_data.call_num;
+                    metadata["start_time"] = call_data.start_time;
+                    metadata["freq"] = call_data.freq;
+                }
+            } else {
+                // No dashes found, use defaults
+                metadata["talkgroup"] = call_data.talkgroup;
+                metadata["call_num"] = call_data.call_num;
+                metadata["start_time"] = call_data.start_time;
+                metadata["freq"] = call_data.freq;
+            }
+            
+            // Add additional trunk-recorder compatible fields
+            metadata["stop_time"] = metadata["start_time"];  // We don't have stop time from filename
+            metadata["emergency"] = false;
+            metadata["encrypted"] = false;
+            metadata["priority"] = 1;
+            metadata["source_id"] = 0;  // Not available in filename
+            metadata["phase2_tdma"] = false;
+            metadata["tdma_slot"] = 0;
+        }
+        
+        // Create temporary JSON file for the plugin router
+        std::ofstream json_file(json_path, std::ios::binary);
         if (json_file.is_open()) {
             json_file << metadata.dump(2);
             json_file.close();
         }
         
-        // Set other call data
-        call_data.source_id = 0;
-        call_data.system_short_name = "unknown";
+        // Set other call data from original JSON if available
+        if (metadata.contains("source_id")) {
+            call_data.source_id = metadata["source_id"];
+        } else {
+            call_data.source_id = 0;
+        }
+        
+        if (metadata.contains("short_name")) {
+            call_data.system_short_name = metadata["short_name"];
+        } else {
+            call_data.system_short_name = "unknown";
+        }
+        
         call_data.call_json = metadata;
         
-        // Send to plugin router if callback is set
-        if (data_callback_) {
-            // Convert to P25_TSBK_Data format
-            P25_TSBK_Data tsbk_data;
-            tsbk_data.source_name = get_plugin_name();
-            tsbk_data.received_time = std::chrono::duration_cast<std::chrono::microseconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count();
-            
-            data_callback_(tsbk_data);
+        // Send to call processing plugins if callback is set
+        if (call_callback_) {
+            if (verbose_) {
+                std::cout << "[API_Input] Routing call data to call processing plugins" << std::endl;
+            }
+            call_callback_(call_data);
+        } else {
+            if (verbose_) {
+                std::cout << "[API_Input] No call callback set - call data not routed" << std::endl;
+            }
         }
         
         if (verbose_) {

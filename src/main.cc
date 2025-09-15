@@ -854,6 +854,21 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         
+        // Set up call processing callback to route Call_Data_t to call processing plugins
+        // This must be done AFTER input plugins are started so they exist to receive the callback
+        input_manager.set_call_callback([&file_output_plugin, verbose](Call_Data_t call_data) {
+            if (file_output_plugin) {
+                if (verbose) {
+                    std::cout << "[CallProcessor] Routing call data to file_output plugin" << std::endl;
+                }
+                file_output_plugin->call_data_ready(call_data);
+            } else {
+                if (verbose) {
+                    std::cout << "[CallProcessor] No file_output plugin available for call data" << std::endl;
+                }
+            }
+        });
+        
         // Initialize and start output plugins
         if (output_manager.initialize_all() != 0) {
             std::cerr << "Failed to initialize output plugins" << std::endl;
