@@ -20,13 +20,30 @@
   "skip_empty_frames": false,
   "include_frame_analysis": true,
   
-  // Service Mode Settings (future API integration)
-  "service_mode": "file",
+  // Service Mode Settings (file, api, or realtime)
+  "service_mode": "realtime",
   "api_endpoint": "http://localhost:8080/api/decode",
   
   // Audio Output Settings
   "audio_format": "wav",
   "audio_sample_rate": 8000,
+
+  // Realtime Input Plugins (for service_mode: "realtime")
+  "input_plugins": [
+    {
+      "name": "p25_tsbk_udp",
+      "library": "./plugins/libp25_tsbk_udp_input.so",
+      "enabled": true,
+      "config": {
+        "listen_address": "127.0.0.1",
+        "listen_port": 9999,
+        "buffer_size": 8192,
+        "max_queue_size": 1000,
+        "validate_checksums": true,
+        "verbose": true
+      }
+    }
+  ],
 
   // Decryption Keys
   // ===============

@@ -50,10 +50,10 @@ set(SOURCES
 add_executable(trunk-decoder ${SOURCES})
 
 # Try to find and link boost if available
-find_package(Boost COMPONENTS program_options)
+find_package(Boost COMPONENTS program_options filesystem)
 if(Boost_FOUND)
     target_include_directories(trunk-decoder PRIVATE ${Boost_INCLUDE_DIRS})
-    target_link_libraries(trunk-decoder ${Boost_LIBRARIES})
+    target_link_libraries(trunk-decoder ${Boost_LIBRARIES} dl)
     target_compile_definitions(trunk-decoder PRIVATE HAVE_BOOST=1)
 else()
     message(STATUS "Building without Boost - using simple argument parsing")
