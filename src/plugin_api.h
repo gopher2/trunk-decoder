@@ -11,6 +11,7 @@
 #include <string>
 #include <memory>
 #include <map>
+#include <functional>
 #include <boost/dll/alias.hpp>
 #include <boost/shared_ptr.hpp>
 #include <nlohmann/json.hpp>
@@ -20,6 +21,7 @@ using json = nlohmann::json;
 // Forward declarations
 struct Call_Data_t;
 struct System_Info;
+struct P25_TSBK_Data;
 
 // Plugin lifecycle states
 enum class Plugin_State {
@@ -82,6 +84,25 @@ struct System_Info {
     std::vector<double> control_channels;
     bool encrypted_calls_allowed;
     std::map<std::string, std::string> config;
+};
+
+// P25 TSBK data structure for input plugins
+struct P25_TSBK_Data {
+    uint32_t magic;              // 0x50323543 ("P25C")
+    uint32_t version;            // Protocol version
+    uint64_t timestamp_us;       // Microsecond timestamp
+    uint32_t sequence_number;    // For ordering/loss detection
+    uint32_t nac;                // Network Access Code (System ID)
+    uint32_t site_id;            // Site identifier
+    double frequency;            // Control channel frequency
+    uint32_t sample_rate;        // Sample rate of data
+    uint16_t data_length;        // Length of P25 data
+    uint16_t checksum;           // Simple integrity check
+    std::vector<uint8_t> tsbk_data; // Raw P25 TSBK data
+    
+    // Derived/processed fields
+    std::string source_name;     // Input plugin name
+    uint64_t received_time;      // When received by input plugin
 };
 
 // Base plugin API class
@@ -156,6 +177,119 @@ public:
     virtual int audio_stream(Call_Data_t* call_info, int16_t* samples, int sample_count) override { return 0; }
     virtual int system_started(System_Info system_info) override { return 0; }
     virtual int system_stopped(System_Info system_info) override { return 0; }
+    
+    virtual json get_stats() override {
+        json stats;
+        stats["plugin_name"] = get_plugin_name();
+        stats["state"] = static_cast<int>(state_);
+        stats["enabled"] = enabled_;
+        return stats;
+    }
+    
+protected:
+    void set_state(Plugin_State state) { state_ = state; }
+};
+
+// Input Plugin API for receiving P25 TSBK data
+class Input_Plugin_Api {
+public:
+    virtual ~Input_Plugin_Api() = default;
+    
+    // Plugin lifecycle
+    virtual int init(json config_data) = 0;
+    virtual int start() = 0;
+    virtual int stop() = 0;
+    virtual int get_state() = 0;
+    virtual bool is_enabled() = 0;
+    
+    // Configuration
+    virtual int parse_config(json config_data) = 0;
+    virtual json get_stats() = 0;
+    
+    // Plugin metadata
+    virtual std::string get_plugin_name() = 0;
+    virtual std::string get_plugin_version() = 0;
+    virtual std::string get_plugin_author() = 0;
+    virtual std::string get_plugin_description() = 0;
+    
+    // Input-specific methods
+    virtual bool has_data() = 0;  // Check if data is available
+    virtual P25_TSBK_Data get_data() = 0;  // Get next TSBK data packet
+    virtual void set_data_callback(std::function<void(P25_TSBK_Data)> callback) = 0;  // Set callback for async data
+    
+protected:
+    Plugin_State state_ = Plugin_State::PLUGIN_UNINITIALIZED;
+    json config_;
+    bool enabled_ = true;
+};
+
+// Base input plugin implementation
+class Base_Input_Plugin : public Input_Plugin_Api {
+public:
+    Base_Input_Plugin() = default;
+    virtual ~Base_Input_Plugin() = default;
+    
+    // Default implementations
+    virtual int get_state() override { return static_cast<int>(state_); }
+    virtual bool is_enabled() override { return enabled_; }
+    
+    virtual json get_stats() override {
+        json stats;
+        stats["plugin_name"] = get_plugin_name();
+        stats["state"] = static_cast<int>(state_);
+        stats["enabled"] = enabled_;
+        return stats;
+    }
+    
+protected:
+    void set_state(Plugin_State state) { state_ = state; }
+    std::function<void(P25_TSBK_Data)> data_callback_;
+};
+
+// Output Plugin API Interface
+class Output_Plugin_Api {
+public:
+    virtual ~Output_Plugin_Api() = default;
+    
+    // Plugin lifecycle
+    virtual int init(json config_data) = 0;
+    virtual int start() = 0;
+    virtual int stop() = 0;
+    virtual int get_state() = 0;
+    virtual bool is_enabled() = 0;
+    
+    // Configuration
+    virtual int parse_config(json config_data) = 0;
+    virtual json get_stats() = 0;
+    
+    // Plugin metadata
+    virtual std::string get_plugin_name() = 0;
+    virtual std::string get_plugin_version() = 0;
+    virtual std::string get_plugin_author() = 0;
+    virtual std::string get_plugin_description() = 0;
+    
+    // Output-specific methods
+    virtual int process_data(const P25_TSBK_Data& data) = 0;  // Process incoming data
+    virtual int flush() = 0;  // Flush any buffered data
+    virtual bool is_ready() = 0;  // Check if ready to accept data
+    
+protected:
+    Plugin_State state_ = Plugin_State::PLUGIN_UNINITIALIZED;
+    json config_;
+    bool enabled_ = true;
+};
+
+// Base output plugin implementation
+class Base_Output_Plugin : public Output_Plugin_Api {
+public:
+    Base_Output_Plugin() = default;
+    virtual ~Base_Output_Plugin() = default;
+    
+    // Default implementations
+    virtual int get_state() override { return static_cast<int>(state_); }
+    virtual bool is_enabled() override { return enabled_; }
+    virtual int flush() override { return 0; }  // Default: no buffering
+    virtual bool is_ready() override { return state_ == Plugin_State::PLUGIN_RUNNING; }
     
     virtual json get_stats() override {
         json stats;
